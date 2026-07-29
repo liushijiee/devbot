@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 @lru_cache
-def get_setting() -> Settings:
+def get_settings() -> Settings:
     """单例配置，全局复用。"""
     return Settings()
 
