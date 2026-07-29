@@ -1,0 +1,125 @@
+import re
+from dataclasses import dataclass, field
+
+@dataclass
+class Hunk:
+    """一个 diff hunk（一段连续变更）。"""
+    old_start: int
+    old_lines: int
+    new_start: int
+    new_lines: int
+    content: str
+
+@dataclass
+class FileChange:
+    """一个变更文件的结构化表示。"""
+    path: str
+    language: str
+    hunks: list[Hunk] = field(default_factory=list)
+    is_new: bool = False
+    is_deleted: bool = False
+    is_renamed: bool = False
+    changed_lines: int = 0
+    diff_text: str = ""
+
+EXTENSION_LANGUAGE = {
+    ".py": "python",
+    ".js": "javascript",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".jsx": "javascript",
+    ".java": "java",
+    ".go": "go",
+    ".rs": "rust",
+    ".rb": "ruby",
+    ".php": "php",
+    ".c": "c",
+    ".cpp": "cpp",
+    ".h": "c",
+    ".cs": "csharp",
+    ".vue": "vue",
+    ".sql": "sql",
+    ".sh": "shell",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".json": "json",
+    ".xml": "xml",
+    ".html": "html",
+    ".css": "css",
+    ".scss": "scss",
+}
+
+HUNK_HEADER_RE = re.compile(
+    r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@"
+)
+
+def detect_language(path: str) -> str:
+    """根据文件后缀推断语言。"""
+    for ext, lang in EXTENSION_LANGUAGE.items():
+        if path.endswith(ext):
+            return lang
+    return "unknown"
+
+def count_changed_lines(diff_text: str) -> int:
+    """统计 diff 中新增(+)和删除(-)行的总数。"""
+    count = 0
+    for line in diff_text.splitlines():
+        if line.startswith("+") and not line.startswith("+++"):
+            count += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            count += 1
+    return count
+
+def parse_hunks(diff_text: str) -> list[Hunk]:
+    """将 unified diff 文本解析为 Hunk 列表。"""
+    hunks = []
+    current_hunk: Hunk | None = None
+    content_lines: list[str] = []
+
+    for line in diff_text.splitlines():
+        match = HUNK_HEADER_RE.match(line)
+        if match:
+
+            if current_hunk:
+                current_hunk.content = "\n".join(content_lines)
+                hunks.append(current_hunk)
+
+            current_hunk = Hunk(
+                old_start=int(match.group(1)),
+                old_lines=int(match.group(2) or 1),
+                new_start=int(match.group(3)),
+                new_lines=int(match.group(4) or 1),
+                content="",
+            )
+            content_lines = [line]
+        elif current_hunk:
+            content_lines.append(line)
+
+    if current_hunk:
+        current_hunk.content = "\n".join(content_lines)
+        hunks.append(current_hunk)
+
+    return hunks
+
+def parse_gitlab_changes(changes: list[dict]) -> list[FileChange]:
+    """
+    主入口：将 GitLab API 返回的 changes 列表解析为 FileChange 列表。
+    """
+    result = []
+    for item in changes:
+        path = item.get("new_path", item.get("old_path", ""))
+        diff_text = item.get("diff", "")
+
+        file_change = FileChange(
+            path=path,
+            language=detect_language(path),
+            hunks=parse_hunks(diff_text),
+            is_new=item.get("new_file", False),
+            is_deleted=item.get("deleted_file", False),
+            is_renamed=item.get("renamed_file", False),
+            changed_lines=count_changed_lines(diff_text),
+            diff_text=diff_text,
+        )
+        result.append(file_change)
+
+    return result
