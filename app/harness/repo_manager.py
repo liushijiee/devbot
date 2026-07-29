@@ -1,3 +1,21 @@
+"""1
+仓库管理器
+负责 git clone 到本地临时目录，审查结束后清理。
+工具层（read_file/grep）操作的就是这里 clone 下来的本地文件。
+
+
+输入：
+  repo_url = "https://gitlab.com/team/project.git"
+  branch = "feature/add-login"
+
+执行：
+  git clone --depth=1 --single-branch --branch feature/add-login \
+      https://gitlab.com/team/project.git /tmp/devbot_repos/abc123/
+
+输出：
+  clone_path = Path("/tmp/devbot_repos/abc123/")
+  → 后续 read_file / grep 工具都在这个目录下操作
+"""
 
 import asyncio
 import logging

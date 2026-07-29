@@ -1,4 +1,12 @@
+"""
+GitLab API 客户端
+封装 MR 评论、Commit Status、获取 diff 等操作。
 
+GitLab API 特点（vs GitHub）：
+- 项目用 ID 或 URL-encoded path 标识（如 group%2Fproject）
+- 行级评论通过 Discussions API 实现
+- Commit Status API 参数略有不同
+"""
 
 import logging
 import httpx

@@ -1,3 +1,14 @@
+"""
+Prompt Registry
+加载 YAML prompt 模板并填充运行时变量。
+
+设计意图：
+- Prompt 外置为 YAML 文件，修改 prompt 不用改 Python 代码
+- 统一加载接口，Critic/Reflector 通过名字获取 prompt
+- 模板变量用 str.format() 填充（{diff_text}、{rules} 等）
+"""
+
+
 from pathlib import Path
 from dataclasses import dataclass
 import logging

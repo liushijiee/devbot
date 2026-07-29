@@ -1,4 +1,15 @@
+"""
+工具层：Critic 的 3 个核心工具
+- read_file: 读取仓库文件（整个 clone 下来的仓库）
+- grep: 正则搜索仓库代码
+- get_diff_file: 获取 MR 中指定变更文件的 diff
 
+设计原则：
+1. 工厂模式 —— 运行时注入 repo_manager 和 file_changes 依赖
+2. 路径安全 —— 防止 LLM 构造路径逃逸（../../etc/passwd）
+3. 输出截断 —— 防止超大文件撑爆 token budget
+4. LangChain StructuredTool —— 直接接入 LangGraph ReAct Agent
+"""
 
 import re
 import logging

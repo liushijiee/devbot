@@ -1,3 +1,15 @@
+"""
+LangGraph 节点实现
+每个节点是图中的一个处理步骤。
+
+节点列表：
+- prepare: Harness 层处理（解析 → 过滤 → 分组 → 规则匹配）
+- run_critic: 运行单个 Critic ReAct Agent
+- aggregate: 合并去重所有 Critic 的 findings
+- reflect: Reflector 验证 critical/warning findings
+- report: 计算风险分 + 生成输出
+"""
+
 
 import json
 import logging

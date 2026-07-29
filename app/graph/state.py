@@ -1,4 +1,12 @@
+"""
+LangGraph 状态定义
+State 是图中所有节点共享的数据结构，每个节点读取 + 修改 State。
 
+设计意图：
+- 输入字段：Webhook 传入的原始数据
+- 中间字段：各节点产出的中间结果
+- 输出字段：最终审查报告
+"""
 
 import operator
 from typing import Annotated, Any, Optional

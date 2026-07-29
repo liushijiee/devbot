@@ -1,4 +1,17 @@
+"""
+GitLab Webhook 路由
+接收 MR 事件，X-Gitlab-Token 校验，异步触发评审。
 
+完整流程：
+  Webhook → 校验 → 过滤事件 → 异步触发 _run_review()
+  _run_review():
+    1. 获取 MR 详情（sha、branch、repo URL）
+    2. 获取 MR diff（changes JSON）
+    3. 设置 Commit Status = "running"
+    4. 调用 LangGraph 审查图（run_review）
+    5. 发布审查结果（摘要 + 行级评论）
+    6. 设置 Commit Status = "success" / "failed"
+"""
 import asyncio
 import logging
 

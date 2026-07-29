@@ -1,3 +1,30 @@
+"""4
+文件分组器
+将变更文件列表按行数阈值分为多个 bundle。
+
+核心规则（面试要能讲清楚）：
+1. 文件是最小单位，永远不会被拆分
+2. 单文件超过阈值 → 独占一个 bundle
+3. 多个小文件打包到一起，直到接近阈值
+4. 阈值默认 800 行（保证 LLM 注意力质量）
+
+
+# 输入：过滤后的文件列表（假设剩 6 个文件）
+[
+    FileChange(path="src/auth/login.py", changed_lines=200),
+    FileChange(path="src/auth/token.py", changed_lines=150),
+    FileChange(path="src/api/routes.py", changed_lines=300),
+    FileChange(path="src/models/user.py", changed_lines=100),
+    FileChange(path="src/utils/helper.py", changed_lines=50),
+    FileChange(path="src/legacy/old_module.py", changed_lines=900),  # 大文件！
+]
+
+# 输出：3 个 Bundle（阈值 800 行）
+Bundle 1: [src/legacy/old_module.py]           (900行，独占)
+Bundle 2: [src/api/routes.py, src/auth/login.py, src/auth/token.py]  (650行)
+Bundle 3: [src/models/user.py, src/utils/helper.py]                  (150行)
+(打bundle主要是考虑成本因素，减少多次请求的token消耗)
+"""
 
 import logging
 from dataclasses import dataclass, field

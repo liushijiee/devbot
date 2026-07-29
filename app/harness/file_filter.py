@@ -1,3 +1,30 @@
+"""3
+文件过滤器
+确定性规则过滤不需要审查的文件。
+这是 Harness 层"必须做到的事"——不依赖 LLM 判断。
+
+过滤逻辑参考阿里 OCR：精确文件选择，确保不浪费 token 在垃圾文件上。
+
+
+# 输入：4 个 FileChange
+[
+    FileChange(path="src/auth/login.py", changed_lines=4),
+    FileChange(path="package-lock.json", changed_lines=3000),
+    FileChange(path="src/auth/logo.png", changed_lines=0, is_deleted=False),
+    FileChange(path="old_helper.py", changed_lines=0, is_deleted=True),
+]
+
+# 输出：只剩 1 个
+[
+    FileChange(path="src/auth/login.py", changed_lines=4),
+]
+
+# 被过滤的原因：
+# package-lock.json → 命中 lock 文件正则
+# logo.png → 命中图片后缀正则
+# old_helper.py → is_deleted=True（删除的文件审查价值低）
+"""
+
 import re
 import logging
 from app.harness.diff_parser import FileChange

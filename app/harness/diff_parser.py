@@ -1,3 +1,45 @@
+"""2
+Diff 解析器
+将 GitLab MR changes API 返回的 JSON 解析为结构化 FileChange 列表。
+
+GitLab 返回格式：
+[
+  {
+    "old_path": "src/user.py",
+    "new_path": "src/user.py",
+    "diff": "--- a/src/user.py\n+++ b/src/user.py\n@@ -1,3 +1,4 @@\n...",
+    "new_file": false,
+    "deleted_file": false,
+    "renamed_file": false
+  },
+  ...
+]
+
+
+# 输入：GitLab API 返回的 JSON
+changes = [
+    {
+        "new_path": "src/auth/login.py",
+        "old_path": "src/auth/login.py",
+        "diff": "@@ -10,4 +10,6 @@\n def login(username, password):\n-    user = User.query.filter_by(name=username).first()\n+    user = User.query.filter_by(name=username)\n+    if not user:\n+        return None\n     return generate_token(user)",
+        "new_file": False,
+        "deleted_file": False,
+        "renamed_file": False,
+    }
+]
+
+# 输出：结构化 FileChange
+FileChange(
+    path="src/auth/login.py",
+    language="python",
+    changed_lines=4,          # 1行删除 + 3行新增
+    is_new=False,
+    is_deleted=False,
+    hunks=[Hunk(old_start=10, old_lines=4, new_start=10, new_lines=6, content="...")],
+    diff_text="@@ -10,4 +10,6 @@\n def login(..."  # 原始文本保留
+)
+"""
+
 import re
 import logging
 from dataclasses import dataclass, field

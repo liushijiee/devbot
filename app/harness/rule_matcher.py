@@ -1,3 +1,27 @@
+"""5
+规则匹配器
+根据文件语言和路径，注入对应的审查规则到 Critic prompt 中。
+
+这是 Harness 层的"确定性规则注入"——
+不让 LLM 自己决定关注什么规则，而是工程逻辑预先匹配好。
+参考阿里 OCR 的模板引擎规则匹配思路（但简化为 Python dict）。
+
+
+# 输入：Bundle 2 的文件列表
+[
+    FileChange(path="src/api/routes.py", language="python"),
+    FileChange(path="src/auth/login.py", language="python"),
+]
+
+# 输出：拼接到 Critic prompt 里的规则文本
+
+【本次审查需重点关注的规则】
+  - 检查异常处理：是否有裸 except、是否吞掉了异常
+  - 检查接口参数校验是否完整        ← 因为路径匹配了 /api/
+  - 检查是否缺少类型注解（函数参数和返回值）
+  - 检查资源管理：文件/连接是否使用 with 语句
+  - 检查鉴权中间件是否生效          ← 因为路径匹配了 route
+"""
 
 import logging
 from app.harness.diff_parser import FileChange

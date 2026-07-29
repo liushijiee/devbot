@@ -1,3 +1,7 @@
+"""
+DevBot — FastAPI 入口
+接收 GitLab Webhook，异步触发 MR 评审流程。
+"""
 
 import logging
 import sys

@@ -1,4 +1,15 @@
+"""
+LangGraph 图构建器
+将所有节点组装为完整的审查流水线。
 
+图结构：
+  prepare ──→ Send × 4 Critics（并行）──→ aggregate ──→ reflect ──→ report
+
+关键机制：
+- Send API: 确定性扇出到 4 个 Critic（不是 LLM 决定启动几个，是工程逻辑决定）
+- operator.add reducer: 并行 Critic 的结果自动合并到 critic_results 列表
+- 异步执行: Critic 和 Reflector 是 async 节点（LLM 调用）
+"""
 
 import logging
 from typing import Any

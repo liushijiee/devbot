@@ -1,4 +1,8 @@
-
+"""
+DevBot 配置管理
+所有敏感信息通过环境变量注入，不硬编码。
+面试点：12-Factor App 配置外置原则。
+"""
 
 from pydantic_settings import BaseSettings
 from functools import lru_cache
