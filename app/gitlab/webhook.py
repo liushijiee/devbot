@@ -68,7 +68,7 @@ async def _run_review(webhook_data: dict):
 
     logger.info(f"[审查] ══ 开始 ══ Project #{project_id} MR !{mr_iid}")
     logger.info(f"[审查] 分支: {source_branch} | head_sha: {head_sha[:12]}...")
-    logger.debug(f"[审查] repo_url: {repo_url[:50]}...")
+    logger.debug(f"[审查] repo_url: {repo_url.split('@')[-1] if '@' in repo_url else repo_url[:50]}...")
 
     try:
 

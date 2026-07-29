@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -33,6 +34,8 @@ class RepoManager:
         base_dir.mkdir(parents=True, exist_ok=True)
 
         self._clone_path = Path(tempfile.mkdtemp(dir=base_dir))
+        # mkdtemp 会创建目录，但 git clone 要求目标不存在，先删掉
+        shutil.rmtree(self._clone_path)
         logger.info(f"[Repo] 开始 clone → {self._clone_path}")
         logger.debug(f"[Repo] 命令: git clone --depth=1 --single-branch --branch {branch}")
 
@@ -45,16 +48,18 @@ class RepoManager:
             str(self._clone_path),
         ]
 
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        # Windows 上 asyncio.create_subprocess_exec 不兼容 uvicorn 事件循环
+        # 改用 run_in_executor + subprocess.run 保证跨平台兼容
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: subprocess.run(cmd, capture_output=True, timeout=120),
         )
-        _, stderr = await process.communicate()
 
-        if process.returncode != 0:
-            logger.error(f"[Repo] clone 失败: {stderr.decode()[:200]}")
-            raise RuntimeError(f"git clone failed: {stderr.decode()}")
+        if result.returncode != 0:
+            err_msg = result.stderr.decode(errors="replace")[:200]
+            logger.error(f"[Repo] clone 失败: {err_msg}")
+            raise RuntimeError(f"git clone failed: {err_msg}")
 
         logger.info(f"[Repo] clone 完成: {self._clone_path}")
         return self._clone_path

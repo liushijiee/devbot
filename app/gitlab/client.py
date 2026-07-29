@@ -43,6 +43,10 @@ class GitLabClient:
         创建行级评论（通过 Discussion API）。
         GitLab 行级评论需要 position 对象，比 GitHub 复杂。
         """
+        if not new_line or new_line < 1:
+            logger.warning(f"[GitLab] 行号无效({new_line})，跳过行级评论: {new_path}")
+            return
+
         url = f"{self.base_url}/projects/{project_id}/merge_requests/{mr_iid}/discussions"
         payload = {
             "body": body,
@@ -51,6 +55,7 @@ class GitLabClient:
                 "head_sha": head_sha,
                 "start_sha": start_sha,
                 "position_type": "text",
+                "old_path": new_path,
                 "new_path": new_path,
                 "new_line": new_line,
             },

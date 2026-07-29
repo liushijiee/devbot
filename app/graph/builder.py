@@ -160,7 +160,8 @@ async def run_review(
 
     repo_manager = RepoManager()
     try:
-        logger.info(f"[RunReview] 开始 clone 仓库: {repo_url[:60]}... branch={branch}")
+        safe_url = repo_url.split('@')[-1] if '@' in repo_url else repo_url[:60]
+        logger.info(f"[RunReview] 开始 clone 仓库: {safe_url} | branch={branch}")
         await repo_manager.clone(repo_url, branch)
         logger.info(f"[RunReview] 仓库已 clone 到: {repo_manager.clone_path}")
 
