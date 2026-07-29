@@ -27,3 +27,4 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """单例配置，全局复用。"""
     return Settings()
+
