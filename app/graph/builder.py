@@ -49,12 +49,14 @@ def build_review_graph(repo_manager: RepoManager, file_changes: list[FileChange]
     def route_to_critics(state: ReviewState) -> list[Send]:
         """
         确定性扇出：为每个 Critic 创建一个 Send。
-        这是 Harness 层的"确定性启动"——不是 LLM 决定启动几个 Critic。
+        这是 Harness 层的“确定性启动”——不是 LLM 决定启动几个 Critic。
         """
-
+    
         if not state.get("diff_text"):
+            logger.info("[Route] 无 diff，跳过 Critic 直接聚合")
             return [Send("aggregate", state)]
-
+    
+        logger.info(f"[Route] 扇出 {len(CRITIC_NAMES)} 个 Critic: {CRITIC_NAMES}")
         return [
             Send("critic_node", {"critic_name": name, **state})
             for name in CRITIC_NAMES
@@ -66,6 +68,7 @@ def build_review_graph(repo_manager: RepoManager, file_changes: list[FileChange]
         接收 Send 传入的 state（含 critic_name），运行 ReAct Agent。
         """
         critic_name = state["critic_name"]
+        logger.info(f"[CriticNode] ══ 启动: {critic_name} ══")
 
         try:
 
@@ -100,9 +103,10 @@ def build_review_graph(repo_manager: RepoManager, file_changes: list[FileChange]
                 "findings": findings,
                 "error": None,
             }
+            logger.info(f"[CriticNode] {critic_name} 完成 → {len(findings)} findings")
 
         except Exception as e:
-            logger.error(f"Critic [{critic_name}] 失败: {e}")
+            logger.error(f"[CriticNode] {critic_name} 失败: {e}", exc_info=True)
             critic_result: CriticResult = {
                 "critic_name": critic_name,
                 "findings": [],
@@ -130,6 +134,7 @@ def build_review_graph(repo_manager: RepoManager, file_changes: list[FileChange]
     graph.add_edge("reflect", "report")
     graph.add_edge("report", END)
 
+    logger.debug("[Builder] 图构建完成: prepare → critics(×4) → aggregate → reflect → report")
     return graph.compile()
 
 async def run_review(
@@ -155,8 +160,9 @@ async def run_review(
 
     repo_manager = RepoManager()
     try:
+        logger.info(f"[RunReview] 开始 clone 仓库: {repo_url[:60]}... branch={branch}")
         await repo_manager.clone(repo_url, branch)
-        logger.info(f"仓库已 clone 到: {repo_manager.clone_path}")
+        logger.info(f"[RunReview] 仓库已 clone 到: {repo_manager.clone_path}")
 
         file_changes = parse_gitlab_changes(changes)
 
@@ -170,10 +176,11 @@ async def run_review(
             "project_id": project_id,
         }
 
+        logger.info("[RunReview] 执行 LangGraph...")
         result = await graph.ainvoke(initial_state)
+        logger.info(f"[RunReview] LangGraph 执行完成")
         return result
 
     finally:
-
         repo_manager.cleanup()
-        logger.info("临时仓库已清理")
+        logger.info("[RunReview] 临时仓库已清理")

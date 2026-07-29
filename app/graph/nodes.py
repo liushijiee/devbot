@@ -34,15 +34,14 @@ def prepare(state: ReviewState) -> dict:
     Harness 层处理：解析 diff → 过滤 → 分组 → 规则匹配。
     输出供 Critic 使用的结构化数据。
     """
+    logger.info("[Prepare] ══ 开始 Harness 层处理 ══")
 
     all_files = parse_gitlab_changes(state["changes"])
-    logger.info(f"解析到 {len(all_files)} 个变更文件")
 
     filtered = filter_files(all_files)
-    logger.info(f"过滤后剩余 {len(filtered)} 个文件")
 
     if not filtered:
-
+        logger.info("[Prepare] 过滤后无文件，跳过审查")
         return {
             "diff_text": "",
             "changed_files": "（无需审查的文件）",
@@ -52,13 +51,14 @@ def prepare(state: ReviewState) -> dict:
 
     bundles = group_files(filtered)
     bundle = bundles[0]
-    logger.info(f"分为 {len(bundles)} 个 bundle，当前审查第 1 个（{bundle.total_lines} 行）")
+    logger.info(f"[Prepare] 使用 Bundle #1/{len(bundles)} ({bundle.total_lines} 行, {len(bundle.files)} 文件)")
 
     rules_text = match_rules(bundle.files)
 
     all_paths = [f.path for f in filtered]
     changed_files_text = "\n".join(f"- {p}" for p in all_paths)
 
+    logger.info(f"[Prepare] ══ 完成 ══ diff={len(bundle.diff_text)}字符, 文件={len(all_paths)}, 规则={len(rules_text)}字符")
     return {
         "diff_text": bundle.diff_text,
         "changed_files": changed_files_text,
@@ -80,6 +80,7 @@ async def run_critic(state: ReviewState, critic_name: str, repo_manager: RepoMan
     settings = get_settings()
 
     try:
+        logger.info(f"[Critic:{critic_name}] 启动 ReAct Agent (max_rounds={settings.max_tool_rounds})")
 
         template = load_prompt(critic_name)
         system_prompt = template.system
@@ -88,6 +89,7 @@ async def run_critic(state: ReviewState, critic_name: str, repo_manager: RepoMan
             diff_text=state["diff_text"],
             rules=state["rules"],
         )
+        logger.debug(f"[Critic:{critic_name}] prompt 构建完成: system={len(system_prompt)}字符, user={len(user_prompt)}字符")
 
         tools = create_tools(repo_manager, file_changes)
 
@@ -103,8 +105,10 @@ async def run_critic(state: ReviewState, critic_name: str, repo_manager: RepoMan
             config={"recursion_limit": settings.max_tool_rounds * 2 + 5},
         )
 
+        msg_count = len(result["messages"])
         last_message = result["messages"][-1].content
         findings = _parse_findings(last_message, critic_name)
+        logger.info(f"[Critic:{critic_name}] 完成 → {msg_count} 条消息, {len(findings)} 个 findings")
 
         return {
             "critic_name": critic_name,
@@ -113,7 +117,7 @@ async def run_critic(state: ReviewState, critic_name: str, repo_manager: RepoMan
         }
 
     except Exception as e:
-        logger.error(f"Critic [{critic_name}] 执行失败: {e}")
+        logger.error(f"[Critic:{critic_name}] 执行失败: {e}", exc_info=True)
         return {
             "critic_name": critic_name,
             "findings": [],
@@ -128,6 +132,7 @@ def _parse_findings(text: str, critic_name: str) -> list[Finding]:
         start = text.find("[")
         end = text.rfind("]") + 1
         if start == -1 or end == 0:
+            logger.debug(f"[Parse] {critic_name}: 未找到 JSON 数组")
             return []
         json_str = text[start:end]
         raw_findings = json.loads(json_str)
@@ -136,10 +141,11 @@ def _parse_findings(text: str, critic_name: str) -> list[Finding]:
         for f in raw_findings:
             f["critic"] = critic_name
             findings.append(f)
+        logger.debug(f"[Parse] {critic_name}: 解析出 {len(findings)} 个 findings")
         return findings
 
     except (json.JSONDecodeError, TypeError) as e:
-        logger.warning(f"Critic [{critic_name}] 输出解析失败: {e}")
+        logger.warning(f"[Parse] {critic_name}: JSON 解析失败: {e}")
         return []
 
 def aggregate(state: ReviewState) -> dict:
@@ -152,23 +158,30 @@ def aggregate(state: ReviewState) -> dict:
     settings = get_settings()
     all_findings: list[Finding] = []
 
+    logger.info("[Aggregate] ══ 开始聚合 ══")
     for result in state.get("critic_results", []):
         if result.get("error"):
-            logger.warning(f"Critic [{result['critic_name']}] 出错: {result['error']}")
+            logger.warning(f"[Aggregate]   ✗ {result['critic_name']}: 出错 - {result['error']}")
             continue
+        count = len(result.get("findings", []))
+        logger.debug(f"[Aggregate]   ✓ {result['critic_name']}: {count} 个 findings")
         all_findings.extend(result.get("findings", []))
 
-    logger.info(f"聚合前共 {len(all_findings)} 个 findings")
+    logger.info(f"[Aggregate] 合并后共 {len(all_findings)} 个 findings")
 
     filtered = [f for f in all_findings if f.get("confidence", 0) >= settings.confidence_threshold]
+    logger.info(f"[Aggregate] confidence >= {settings.confidence_threshold} 过滤后: {len(filtered)} 个")
 
     deduped = _deduplicate(filtered)
+    logger.debug(f"[Aggregate] 去重后: {len(deduped)} 个")
 
     severity_order = {"critical": 0, "warning": 1, "info": 2}
     deduped.sort(key=lambda f: severity_order.get(f.get("severity", "info"), 3))
 
-    logger.info(f"聚合后剩余 {len(deduped)} 个 findings")
+    for f in deduped:
+        logger.debug(f"[Aggregate]   [{f.get('severity','?')}] {f.get('file','?')}:{f.get('line',0)} - {f.get('title','?')} (conf={f.get('confidence',0):.2f})")
 
+    logger.info(f"[Aggregate] ══ 完成 ══ 最终 {len(deduped)} 个 findings")
     return {"aggregated_findings": deduped}
 
 def _deduplicate(findings: list[Finding]) -> list[Finding]:
@@ -188,15 +201,18 @@ async def reflect(state: ReviewState) -> dict:
     """
     findings = state.get("aggregated_findings", [])
     if not findings:
+        logger.info("[Reflect] 无 findings，跳过验证")
         return {"verified_findings": []}
 
+    logger.info(f"[Reflect] ══ 开始验证 {len(findings)} 个 findings ══")
     verified = []
     reflector_template = load_prompt("reflector")
     llm = _get_llm()
 
-    for finding in findings:
+    for i, finding in enumerate(findings, 1):
 
         if finding.get("severity") == "info":
+            logger.debug(f"[Reflect]   {i}/{len(findings)} [info] 直接通过: {finding.get('title','')}")
             verified.append(finding)
             continue
 
@@ -214,19 +230,20 @@ async def reflect(state: ReviewState) -> dict:
             verdict = _parse_verdict(response.content)
 
             if verdict["verdict"] == "reject":
-                logger.info(f"Reflector 拒绝: {finding.get('title')} - {verdict['reason']}")
+                logger.info(f"[Reflect]   {i}/{len(findings)} ✗ 拒绝: {finding.get('title')} - {verdict['reason']}")
                 continue
             elif verdict["verdict"] == "modify" and verdict.get("modified_finding"):
+                logger.info(f"[Reflect]   {i}/{len(findings)} ✏ 修改: {finding.get('title')}")
                 verified.append(verdict["modified_finding"])
             else:
+                logger.debug(f"[Reflect]   {i}/{len(findings)} ✓ 通过: {finding.get('title')}")
                 verified.append(finding)
 
         except Exception as e:
-
-            logger.warning(f"Reflector 验证失败: {e}")
+            logger.warning(f"[Reflect]   {i}/{len(findings)} 验证异常，默认通过: {e}")
             verified.append(finding)
 
-    logger.info(f"Reflector 验证后剩余 {len(verified)} 个 findings")
+    logger.info(f"[Reflect] ══ 完成 ══ {len(findings)} → {len(verified)} 个 findings")
     return {"verified_findings": verified}
 
 def _parse_verdict(text: str) -> dict:
@@ -250,7 +267,9 @@ def report(state: ReviewState) -> dict:
     settings = get_settings()
     findings = state.get("verified_findings", [])
 
+    logger.info(f"[Report] ══ 生成报告 ══ ({len(findings)} 个 findings)")
     risk_score = _calculate_risk_score(findings)
+    logger.info(f"[Report] 风险分: {risk_score}/100")
 
     summary = _generate_summary(findings, risk_score)
 

@@ -1,8 +1,11 @@
 
+import logging
 from dataclasses import dataclass, field
 
 from app.config import get_settings
 from app.harness.diff_parser import FileChange
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class Bundle:
@@ -62,5 +65,9 @@ def group_files(
 
     if current_files:
         bundles.append(Bundle(files=current_files, total_lines=current_lines))
+
+    logger.info(f"[FileGrouper] {len(files)} 个文件 → {len(bundles)} 个 bundle (max_lines={max_lines})")
+    for i, b in enumerate(bundles, 1):
+        logger.debug(f"[FileGrouper]   Bundle #{i}: {b.total_lines} 行, {len(b.files)} 个文件: {b.file_paths}")
 
     return bundles

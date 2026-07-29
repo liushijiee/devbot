@@ -1,5 +1,8 @@
 import re
+import logging
 from dataclasses import dataclass, field
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class Hunk:
@@ -105,6 +108,7 @@ def parse_gitlab_changes(changes: list[dict]) -> list[FileChange]:
     """
     主入口：将 GitLab API 返回的 changes 列表解析为 FileChange 列表。
     """
+    logger.info(f"[DiffParser] 开始解析 {len(changes)} 个原始变更")
     result = []
     for item in changes:
         path = item.get("new_path", item.get("old_path", ""))
@@ -121,5 +125,11 @@ def parse_gitlab_changes(changes: list[dict]) -> list[FileChange]:
             diff_text=diff_text,
         )
         result.append(file_change)
+        logger.debug(
+            f"[DiffParser]   {path} | {file_change.language} | "
+            f"+/- {file_change.changed_lines} 行 | hunks={len(file_change.hunks)} | "
+            f"new={file_change.is_new} del={file_change.is_deleted}"
+        )
 
+    logger.info(f"[DiffParser] 解析完成: {len(result)} 个 FileChange")
     return result

@@ -1,6 +1,7 @@
 
 
 import re
+import logging
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -10,6 +11,8 @@ from pydantic import BaseModel, Field
 
 from app.harness.diff_parser import FileChange
 from app.harness.repo_manager import RepoManager
+
+logger = logging.getLogger(__name__)
 
 MAX_READ_LINES = 500
 MAX_GREP_RESULTS = 30
@@ -54,8 +57,10 @@ def _read_file(repo_manager: RepoManager, path: str,
         return f"[错误] {e}"
 
     if not file_path.exists():
+        logger.debug(f"[Tool:read_file] ✗ 不存在: {path}")
         return f"[错误] 文件不存在: {path}"
     if not file_path.is_file():
+        logger.debug(f"[Tool:read_file] ✗ 不是文件: {path}")
         return f"[错误] 不是文件: {path}"
 
     try:
@@ -82,7 +87,9 @@ def _read_file(repo_manager: RepoManager, path: str,
     numbered = [f"{start + i + 1:4d} | {line}" for i, line in enumerate(selected)]
 
     header = f"文件: {path} (共 {total} 行，显示 {start+1}-{end})\n{'─' * 40}\n"
-    return _truncate(header + "\n".join(numbered) + truncated_note)
+    result = _truncate(header + "\n".join(numbered) + truncated_note)
+    logger.info(f"[Tool:read_file] {path} 行{start+1}-{end}/{total} → {len(result)} 字符")
+    return result
 
 def _grep(repo_manager: RepoManager, pattern: str,
           path: Optional[str] = None, file_glob: Optional[str] = None) -> str:
@@ -131,6 +138,7 @@ def _grep(repo_manager: RepoManager, pattern: str,
         return f"[错误] 搜索失败: {e}"
 
     if not results:
+        logger.info(f"[Tool:grep] /{pattern}/ → 0 匹配")
         return f"未找到匹配 '{pattern}' 的结果"
 
     header = f"搜索 '{pattern}' → {len(results)} 条匹配"
@@ -138,6 +146,7 @@ def _grep(repo_manager: RepoManager, pattern: str,
         header += f"（已达上限 {MAX_GREP_RESULTS}）"
     header += f"\n{'─' * 40}\n"
 
+    logger.info(f"[Tool:grep] /{pattern}/ → {len(results)} 匹配")
     return _truncate(header + "\n".join(results))
 
 def _get_diff_file(file_changes: list[FileChange], path: str) -> str:
@@ -145,6 +154,7 @@ def _get_diff_file(file_changes: list[FileChange], path: str) -> str:
 
     for fc in file_changes:
         if fc.path == path or fc.path.endswith("/" + path) or path.endswith("/" + fc.path):
+            logger.info(f"[Tool:get_diff_file] {fc.path} → {len(fc.diff_text)} 字符")
             header = (
                 f"文件: {fc.path}\n"
                 f"语言: {fc.language} | 变更行数: {fc.changed_lines} | "
@@ -153,6 +163,7 @@ def _get_diff_file(file_changes: list[FileChange], path: str) -> str:
             )
             return _truncate(header + fc.diff_text)
 
+    logger.debug(f"[Tool:get_diff_file] ✗ 未找到: {path}")
     available = [fc.path for fc in file_changes]
     return (
         f"[错误] '{path}' 不在本次 MR 变更文件中。\n"
@@ -204,4 +215,5 @@ def create_tools(repo_manager: RepoManager, file_changes: list[FileChange]) -> l
         args_schema=GetDiffFileInput,
     )
 
+    logger.info(f"[Tools] 创建 3 个工具 (read_file, grep, get_diff_file) | 仓库: {repo_manager.clone_path}")
     return [read_file_tool, grep_tool, get_diff_file_tool]

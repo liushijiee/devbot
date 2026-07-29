@@ -1,7 +1,10 @@
 from pathlib import Path
 from dataclasses import dataclass
+import logging
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 PROMPTS_DIR = Path(__file__).parent
 
@@ -48,6 +51,7 @@ def load_prompt(name: str) -> PromptTemplate:
         - reflector: 后置验证 Reflector
     """
     if name in _cache:
+        logger.debug(f"[Prompt] 缓存命中: {name}")
         return _cache[name]
 
     file_path = PROMPTS_DIR / f"{name}.yaml"
@@ -65,6 +69,7 @@ def load_prompt(name: str) -> PromptTemplate:
         user=data["user"],
     )
     _cache[name] = template
+    logger.debug(f"[Prompt] 加载模板: {name} (system={len(template.system)}字符, user={len(template.user)}字符)")
     return template
 
 def list_prompts() -> list[str]:

@@ -1,5 +1,8 @@
 
+import logging
 from app.harness.diff_parser import FileChange
+
+logger = logging.getLogger(__name__)
 
 LANGUAGE_RULES: dict[str, list[str]] = {
     "python": [
@@ -68,17 +71,22 @@ def match_rules(files: list[FileChange]) -> str:
     matched_rules: set[str] = set()
 
     languages = {f.language for f in files}
+    logger.debug(f"[RuleMatcher] 文件语言: {languages}")
     for lang in languages:
         if lang in LANGUAGE_RULES:
             matched_rules.update(LANGUAGE_RULES[lang])
+            logger.debug(f"[RuleMatcher]   语言规则 [{lang}]: +{len(LANGUAGE_RULES[lang])} 条")
 
     for file in files:
         for path_rule in PATH_RULES:
             if re.match(path_rule["pattern"], file.path, re.IGNORECASE):
                 matched_rules.update(path_rule["rules"])
+                logger.debug(f"[RuleMatcher]   路径规则命中 [{file.path}]: +{len(path_rule['rules'])} 条")
 
     if not matched_rules:
+        logger.info(f"[RuleMatcher] 未匹配到任何规则")
         return ""
 
+    logger.info(f"[RuleMatcher] 共匹配 {len(matched_rules)} 条规则")
     rules_text = "\n".join(f"  - {rule}" for rule in sorted(matched_rules))
     return f"\n【本次审查需重点关注的规则】\n{rules_text}\n"
