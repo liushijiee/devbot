@@ -25,6 +25,7 @@
 
 import logging
 from app.harness.diff_parser import FileChange
+from app.graph.tracer import trace_node
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,7 @@ PATH_RULES: list[dict] = [
     },
 ]
 
+@trace_node("5. match_rules")
 def match_rules(files: list[FileChange]) -> str:
     """
     主入口：根据文件列表的语言和路径，返回匹配到的规则文本。

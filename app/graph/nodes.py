@@ -3,10 +3,9 @@ LangGraph 节点实现
 每个节点是图中的一个处理步骤。
 
 节点列表：
-- prepare: Harness 层处理（解析 → 过滤 → 分组 → 规则匹配）
-- run_critic: 运行单个 Critic ReAct Agent
+- prepare: Harness 层处理（格式化 bundle 数据供 Critic 使用）
 - aggregate: 合并去重所有 Critic 的 findings
-- reflect: Reflector 验证 critical/warning findings
+- reflect: Reflector 验证 Agent（带工具，独立调查）
 - report: 计算风险分 + 生成输出
 """
 
@@ -28,6 +27,7 @@ from app.harness.rule_matcher import match_rules
 from app.harness.repo_manager import RepoManager
 from app.prompts.registry import load_prompt, CRITIC_NAMES
 from app.tools.code_tools import create_tools
+from app.graph.tracer import trace_node
 
 logger = logging.getLogger(__name__)
 
@@ -41,19 +41,22 @@ def _get_llm(model: str | None = None) -> ChatOpenAI:
         temperature=0.1,
     )
 
+@trace_node("node1. prepare")
 def prepare(state: ReviewState) -> dict:
     """
-    Harness 层处理：解析 diff → 过滤 → 分组 → 规则匹配。
-    输出供 Critic 使用的结构化数据。
+    Harness 层处理：格式化 bundle 数据供 Critic 使用。
+    输入 state 中已包含 diff_text / changed_files / rules（由 run_review 预填充）。
+    此节点做最终校验和补充。
     """
     logger.info("[Prepare] ══ 开始 Harness 层处理 ══")
 
-    all_files = parse_gitlab_changes(state["changes"])
+    diff_text = state.get("diff_text", "")
+    changed_files = state.get("changed_files", "")
+    rules = state.get("rules", "")
+    all_file_paths = state.get("all_file_paths", [])
 
-    filtered = filter_files(all_files)
-
-    if not filtered:
-        logger.info("[Prepare] 过滤后无文件，跳过审查")
+    if not diff_text:
+        logger.info("[Prepare] 无 diff 内容，跳过审查")
         return {
             "diff_text": "",
             "changed_files": "（无需审查的文件）",
@@ -61,81 +64,16 @@ def prepare(state: ReviewState) -> dict:
             "all_file_paths": [],
         }
 
-    bundles = group_files(filtered)
-    bundle = bundles[0]
-    logger.info(f"[Prepare] 使用 Bundle #1/{len(bundles)} ({bundle.total_lines} 行, {len(bundle.files)} 文件)")
-
-    rules_text = match_rules(bundle.files)
-
-    all_paths = [f.path for f in filtered]
-    changed_files_text = "\n".join(f"- {p}" for p in all_paths)
-
-    logger.info(f"[Prepare] ══ 完成 ══ diff={len(bundle.diff_text)}字符, 文件={len(all_paths)}, 规则={len(rules_text)}字符")
+    logger.info(f"[Prepare] ══ 完成 ══ diff={len(diff_text)}字符, 文件={len(all_file_paths)}, 规则={len(rules)}字符")
     return {
-        "diff_text": bundle.diff_text,
-        "changed_files": changed_files_text,
-        "rules": rules_text,
-        "all_file_paths": all_paths,
+        "diff_text": diff_text,
+        "changed_files": changed_files,
+        "rules": rules,
+        "all_file_paths": all_file_paths,
     }
 
-async def run_critic(state: ReviewState, critic_name: str, repo_manager: RepoManager,
-                     file_changes: list[FileChange]) -> CriticResult:
-    """
-    运行单个 Critic ReAct Agent。
 
-    参数:
-        state: 图状态（包含 diff_text, changed_files, rules）
-        critic_name: Critic 名称（correctness/security/performance/quality）
-        repo_manager: 仓库管理器（提供 clone_path）
-        file_changes: 变更文件列表（供 get_diff_file 工具）
-    """
-    settings = get_settings()
-
-    try:
-        logger.info(f"[Critic:{critic_name}] 启动 ReAct Agent (max_rounds={settings.max_tool_rounds})")
-
-        template = load_prompt(critic_name)
-        system_prompt = template.system
-        user_prompt = template.format_user(
-            changed_files=state["changed_files"],
-            diff_text=state["diff_text"],
-            rules=state["rules"],
-        )
-        logger.debug(f"[Critic:{critic_name}] prompt 构建完成: system={len(system_prompt)}字符, user={len(user_prompt)}字符")
-
-        tools = create_tools(repo_manager, file_changes)
-
-        llm = _get_llm()
-        agent = create_react_agent(
-            model=llm,
-            tools=tools,
-            prompt=SystemMessage(content=system_prompt),
-        )
-
-        result = await agent.ainvoke(
-            {"messages": [HumanMessage(content=user_prompt)]},
-            config={"recursion_limit": settings.max_tool_rounds * 2 + 5},
-        )
-
-        msg_count = len(result["messages"])
-        last_message = result["messages"][-1].content
-        findings = _parse_findings(last_message, critic_name)
-        logger.info(f"[Critic:{critic_name}] 完成 → {msg_count} 条消息, {len(findings)} 个 findings")
-
-        return {
-            "critic_name": critic_name,
-            "findings": findings,
-            "error": None,
-        }
-
-    except Exception as e:
-        logger.error(f"[Critic:{critic_name}] 执行失败: {e}", exc_info=True)
-        return {
-            "critic_name": critic_name,
-            "findings": [],
-            "error": str(e),
-        }
-
+@trace_node("从LLM输出中解析文件diff结果. _parse_findings")
 def _parse_findings(text: str, critic_name: str) -> list[Finding]:
     """从 LLM 输出中解析 JSON findings。"""
 
@@ -196,6 +134,7 @@ def aggregate(state: ReviewState) -> dict:
     logger.info(f"[Aggregate] ══ 完成 ══ 最终 {len(deduped)} 个 findings")
     return {"aggregated_findings": deduped}
 
+@trace_node("6. _deduplicate")
 def _deduplicate(findings: list[Finding]) -> list[Finding]:
     """去重：同文件 + 同行号 + 同 severity 只保留 confidence 最高的。"""
     seen: dict[str, Finding] = {}
@@ -205,20 +144,30 @@ def _deduplicate(findings: list[Finding]) -> list[Finding]:
             seen[key] = f
     return list(seen.values())
 
-async def reflect(state: ReviewState) -> dict:
+@trace_node("7. reflect")
+async def reflect(state: ReviewState, repo_manager: RepoManager,
+                  file_changes: list[FileChange]) -> dict:
     """
-    Reflector 后置验证：
-    - 对 critical/warning 级别的 findings 进行 LLM 验证
+    Reflector 验证 Agent（带工具）：
+    - 对 critical/warning 级别的 findings 进行独立调查验证
+    - 可调用 read_file / grep / get_diff_file 获取真实代码上下文
     - info 级别直接通过（节省 token）
+
+    与旧版区别：
+    - 旧版：只看 diff + finding 文本做判断（Critic 幻觉时无法识别）
+    - 新版：能主动读取代码验证声明是否属实（独立审计员）
     """
     findings = state.get("aggregated_findings", [])
     if not findings:
         logger.info("[Reflect] 无 findings，跳过验证")
         return {"verified_findings": []}
 
-    logger.info(f"[Reflect] ══ 开始验证 {len(findings)} 个 findings ══")
+    settings = get_settings()
+    logger.info(f"[Reflect] ══ 开始验证 {len(findings)} 个 findings（工具增强模式）══")
     verified = []
     reflector_template = load_prompt("reflector")
+
+    tools = create_tools(repo_manager, file_changes)
     llm = _get_llm()
 
     for i, finding in enumerate(findings, 1):
@@ -234,12 +183,19 @@ async def reflect(state: ReviewState) -> dict:
                 finding=json.dumps(finding, ensure_ascii=False, indent=2),
             )
 
-            response = await llm.ainvoke([
-                SystemMessage(content=reflector_template.system),
-                HumanMessage(content=user_prompt),
-            ])
+            agent = create_react_agent(
+                model=llm,
+                tools=tools,
+                prompt=SystemMessage(content=reflector_template.system),
+            )
 
-            verdict = _parse_verdict(response.content)
+            result = await agent.ainvoke(
+                {"messages": [HumanMessage(content=user_prompt)]},
+                config={"recursion_limit": 8},
+            )
+
+            last_msg = result["messages"][-1].content
+            verdict = _parse_verdict(last_msg)
 
             if verdict["verdict"] == "reject":
                 logger.info(f"[Reflect]   {i}/{len(findings)} ✗ 拒绝: {finding.get('title')} - {verdict['reason']}")
@@ -269,6 +225,7 @@ def _parse_verdict(text: str) -> dict:
     except (json.JSONDecodeError, TypeError):
         return {"verdict": "pass", "reason": "解析失败，默认通过"}
 
+@trace_node("8. report")
 def report(state: ReviewState) -> dict:
     """
     生成最终报告：

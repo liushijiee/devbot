@@ -94,6 +94,8 @@ class GitLabClient:
             "description": description,
             "name": "devbot/review",
         }
+        logger.info(f"[GitLab] POST Commit Status → {url}")
+        logger.info(f"[GitLab] Payload: {payload}")
         logger.debug(f"[GitLab] POST Commit Status → {state}: {description}")
         async with httpx.AsyncClient() as client:
             await client.post(url, headers=self.headers, json=payload)
@@ -109,6 +111,7 @@ class GitLabClient:
             resp = await client.get(url, headers=self.headers)
             data = resp.json()
             changes = data.get("changes", [])
+            # logger.info(f"变化文件内容:{changes}")
             logger.debug(f"[GitLab] MR diff 响应: {resp.status_code}, {len(changes)} 个文件")
             return changes
 

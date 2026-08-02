@@ -34,6 +34,7 @@ async def gitlab_webhook(request: Request):
     logger.info("[Webhook] 收到请求")
 
     token = request.headers.get("X-Gitlab-Token", "")
+    logger.info(f"[Webhook] Token: '{token[:8]}...'")
     if not verify_token(token, settings.gitlab_webhook_secret):
         logger.warning(f"[Webhook] Token 验证失败: '{token[:8]}...'")
         raise HTTPException(status_code=403, detail="Invalid token")
@@ -71,6 +72,8 @@ async def _run_review(webhook_data: dict):
     mr_attrs = webhook_data["object_attributes"]
     project_id = webhook_data["project"]["id"]
     mr_iid = mr_attrs["iid"]
+    
+    # 被合并的分支hash
     head_sha = mr_attrs.get("last_commit", {}).get("id", "")
     source_branch = mr_attrs.get("source_branch", "main")
 
@@ -87,6 +90,7 @@ async def _run_review(webhook_data: dict):
 
         if head_sha:
             logger.debug(f"[审查] 设置 Commit Status → running")
+            # 相当于修改CI状态为running
             await gitlab.set_commit_status(
                 project_id, head_sha, "running", "DevBot 正在审查..."
             )

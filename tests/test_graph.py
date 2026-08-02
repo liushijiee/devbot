@@ -34,7 +34,7 @@ MOCK_CHANGES = [
 
 def test_prepare():
     print("=" * 50)
-    print("TEST: prepare 节点")
+    print("TEST: prepare 节点（接收预填充数据）")
     print("=" * 50)
     state: ReviewState = {
         "changes": MOCK_CHANGES,
@@ -42,6 +42,10 @@ def test_prepare():
         "branch": "main",
         "mr_iid": 1,
         "project_id": 100,
+        "diff_text": "@@ -1,3 +1,5 @@\n def login(username, password):\n+    if not user:\n+        return None",
+        "changed_files": "- src/auth/login.py\n- src/routes.py",
+        "rules": "检查异常处理",
+        "all_file_paths": ["src/auth/login.py", "src/routes.py"],
     }
     result = prepare(state)
     print(f"  diff_text 长度: {len(result['diff_text'])} 字符")
@@ -50,6 +54,23 @@ def test_prepare():
     assert "src/auth/login.py" in result["changed_files"]
     assert "src/routes.py" in result["changed_files"]
     assert len(result["diff_text"]) > 0
+    print("[PASS]\n")
+
+def test_prepare_empty():
+    print("=" * 50)
+    print("TEST: prepare 节点（无 diff）")
+    print("=" * 50)
+    state: ReviewState = {
+        "changes": [],
+        "diff_text": "",
+        "changed_files": "",
+        "rules": "",
+        "all_file_paths": [],
+    }
+    result = prepare(state)
+    assert result["diff_text"] == ""
+    assert "无需审查" in result["changed_files"]
+    print("  空 diff 正确处理 ✓")
     print("[PASS]\n")
 
 def test_parse_findings():
@@ -160,6 +181,7 @@ def test_report_empty():
 
 if __name__ == "__main__":
     test_prepare()
+    test_prepare_empty()
     test_parse_findings()
     test_aggregate()
     test_report()

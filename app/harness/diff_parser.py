@@ -43,6 +43,7 @@ FileChange(
 import re
 import logging
 from dataclasses import dataclass, field
+from app.graph.tracer import trace_node
 
 logger = logging.getLogger(__name__)
 
@@ -143,9 +144,10 @@ def parse_hunks(diff_text: str) -> list[Hunk]:
     if current_hunk:
         current_hunk.content = "\n".join(content_lines)
         hunks.append(current_hunk)
-
+    # logger.info(f"[DiffParser] 解析 diff 完成: {hunks}")
     return hunks
 
+@trace_node("1. parse_gitlab_changes")
 def parse_gitlab_changes(changes: list[dict]) -> list[FileChange]:
     """
     主入口：将 GitLab API 返回的 changes 列表解析为 FileChange 列表。
@@ -174,4 +176,5 @@ def parse_gitlab_changes(changes: list[dict]) -> list[FileChange]:
         )
 
     logger.info(f"[DiffParser] 解析完成: {len(result)} 个 FileChange")
+    # logger.info(f"parse_gitlab_changes result: {result}")
     return result

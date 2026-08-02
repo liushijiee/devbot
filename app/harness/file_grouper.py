@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 
 from app.config import get_settings
 from app.harness.diff_parser import FileChange
+from app.graph.tracer import trace_node
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,7 @@ class Bundle:
         """bundle 内所有文件路径。"""
         return [f.path for f in self.files]
 
+@trace_node("2. group_files")
 def group_files(
     files: list[FileChange],
     max_lines: int | None = None,
