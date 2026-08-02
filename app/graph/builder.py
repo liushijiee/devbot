@@ -36,6 +36,7 @@ from app.harness.file_filter import filter_files
 from app.harness.file_grouper import group_files, Bundle
 from app.harness.rule_matcher import match_rules
 from app.harness.repo_manager import RepoManager
+from app.harness.position_fixer import fix_positions
 from app.prompts.registry import CRITIC_NAMES
 from app.tools.code_tools import create_tools
 from app.graph.tracer import trace_node
@@ -115,6 +116,7 @@ def build_review_graph(repo_manager: RepoManager, file_changes: list[FileChange]
 
             last_message = result["messages"][-1].content
             findings = _parse_findings(last_message, critic_name)
+            findings = fix_positions(findings, state.get("diff_text", ""))
 
             critic_result: CriticResult = {
                 "critic_name": critic_name,

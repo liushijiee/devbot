@@ -73,6 +73,9 @@ class GitLabClient:
             resp = await client.post(url, headers=self.headers, json=payload)
             if resp.status_code >= 400:
                 logger.warning(f"[GitLab] 行级评论失败: {resp.status_code} {resp.text[:200]}")
+                # 降级：发 MR 级评论（带文件路径+行号前缀），保证信息不丢
+                fallback_body = f"📍 `{new_path}:{new_line}`\n\n{body}"
+                await self.create_mr_note(project_id, mr_iid, fallback_body)
             else:
                 logger.debug(f"[GitLab] 行级评论成功: {resp.status_code}")
 
