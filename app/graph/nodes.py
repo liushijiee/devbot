@@ -19,7 +19,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.prebuilt import create_react_agent
 
 from app.config import get_settings
-from app.graph.state import ReviewState, Finding, CriticResult
+from app.graph.state import ReviewState, Finding, CriticResult, TokenUsage
 from app.harness.diff_parser import parse_gitlab_changes, FileChange
 from app.harness.file_filter import filter_files
 from app.harness.file_grouper import group_files, Bundle
@@ -40,6 +40,18 @@ def _get_llm(model: str | None = None) -> ChatOpenAI:
         base_url=settings.llm_base_url,
         temperature=0.1,
     )
+
+def _extract_token_usage(messages: list) -> TokenUsage:
+    """从 LangGraph agent 的 messages 中提取 token 用量。"""
+    usage: TokenUsage = {"input_tokens": 0, "output_tokens": 0, "llm_calls": 0}
+    for msg in messages:
+        metadata = getattr(msg, "response_metadata", {}) or {}
+        token_usage = metadata.get("token_usage", {})
+        if token_usage:
+            usage["input_tokens"] += token_usage.get("prompt_tokens", 0)
+            usage["output_tokens"] += token_usage.get("completion_tokens", 0)
+            usage["llm_calls"] += 1
+    return usage
 
 @trace_node("node1. prepare")
 def prepare(state: ReviewState) -> dict:
@@ -160,7 +172,7 @@ async def reflect(state: ReviewState, repo_manager: RepoManager,
     findings = state.get("aggregated_findings", [])
     if not findings:
         logger.info("[Reflect] 无 findings，跳过验证")
-        return {"verified_findings": []}
+        return {"verified_findings": [], "reflect_token_usage": {"input_tokens": 0, "output_tokens": 0, "llm_calls": 0}}
 
     settings = get_settings()
     logger.info(f"[Reflect] ══ 开始验证 {len(findings)} 个 findings（工具增强模式）══")
@@ -169,6 +181,8 @@ async def reflect(state: ReviewState, repo_manager: RepoManager,
 
     tools = create_tools(repo_manager, file_changes)
     llm = _get_llm()
+
+    reflect_usage: TokenUsage = {"input_tokens": 0, "output_tokens": 0, "llm_calls": 0}
 
     for i, finding in enumerate(findings, 1):
 
@@ -194,6 +208,12 @@ async def reflect(state: ReviewState, repo_manager: RepoManager,
                 config={"recursion_limit": 8},
             )
 
+            # 统计本次验证的 token 消耗
+            usage = _extract_token_usage(result["messages"])
+            reflect_usage["input_tokens"] += usage["input_tokens"]
+            reflect_usage["output_tokens"] += usage["output_tokens"]
+            reflect_usage["llm_calls"] += usage["llm_calls"]
+
             last_msg = result["messages"][-1].content
             verdict = _parse_verdict(last_msg)
 
@@ -211,8 +231,11 @@ async def reflect(state: ReviewState, repo_manager: RepoManager,
             logger.warning(f"[Reflect]   {i}/{len(findings)} 验证异常，默认通过: {e}")
             verified.append(finding)
 
-    logger.info(f"[Reflect] ══ 完成 ══ {len(findings)} → {len(verified)} 个 findings")
-    return {"verified_findings": verified}
+    logger.info(
+        f"[Reflect] ══ 完成 ══ {len(findings)} → {len(verified)} 个 findings"
+        f" | token: in={reflect_usage['input_tokens']}, out={reflect_usage['output_tokens']}, calls={reflect_usage['llm_calls']}"
+    )
+    return {"verified_findings": verified, "reflect_token_usage": reflect_usage}
 
 def _parse_verdict(text: str) -> dict:
     """解析 Reflector 的 JSON 输出。"""

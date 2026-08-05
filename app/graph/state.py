@@ -12,16 +12,35 @@ import operator
 from typing import Annotated, Any, Optional
 from typing_extensions import TypedDict
 
+def _merge_token_usage(a: dict, b: dict) -> dict:
+    """合并两个 token_usage dict（用于并行 Critic 结果归集）。"""
+    if not a:
+        return b
+    if not b:
+        return a
+    return {
+        "input_tokens": a.get("input_tokens", 0) + b.get("input_tokens", 0),
+        "output_tokens": a.get("output_tokens", 0) + b.get("output_tokens", 0),
+        "llm_calls": a.get("llm_calls", 0) + b.get("llm_calls", 0),
+    }
+
 class Finding(TypedDict, total=False):
     """单个审查发现。"""
     file: str
     line: int
+    existing_code: str
     severity: str
     title: str
     description: str
     suggestion: str
     confidence: float
     critic: str
+
+class TokenUsage(TypedDict):
+    """Token 消耗统计。"""
+    input_tokens: int
+    output_tokens: int
+    llm_calls: int
 
 class CriticResult(TypedDict):
     """单个 Critic 的完整输出。"""
@@ -51,6 +70,8 @@ class ReviewState(TypedDict, total=False):
     all_file_paths: list[str]
 
     critic_results: Annotated[list[CriticResult], operator.add]
+
+    token_usage: Annotated[dict, _merge_token_usage]
 
     aggregated_findings: list[Finding]
 

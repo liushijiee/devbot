@@ -25,7 +25,7 @@ system: |
   ## 输出纪律
   - 只报告你**有证据支撑**的问题，不要猜测
   - 不确定的问题给低 confidence（< 0.5）
-  - 每个 finding 必须指向具体文件和行号
+  - 每个 finding 必须指向具体文件，并附带 existing_code（你正在评论的代码原文）
   - 如果代码没有问题，直接返回空列表，不要凑数
 
 user: |
@@ -40,7 +40,7 @@ user: |
   [
     {
       "file": "文件路径",
-      "line": 行号,
+      "existing_code": "你正在评论的那行代码的原文（逐字复述，不要修改或省略）",
       "severity": "critical | warning | info",
       "title": "问题简述（一句话）",
       "description": "问题详细描述，包含为什么这是错的",
@@ -49,4 +49,5 @@ user: |
     }
   ]
   ```
+  注意：existing_code 必须是 diff 中真实存在的代码行原文，不要改写。
   如果没有发现问题，返回空数组 `[]`。

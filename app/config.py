@@ -15,7 +15,7 @@ class Settings(BaseSettings):
 
     dashscope_api_key: str = ""
     llm_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    critic_model: str = "qwen-plus-0112"
+    critic_model: str = "qwen-max"
     judge_model: str = "qwen3.7-plus"
 
     max_tool_rounds: int = 12

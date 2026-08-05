@@ -46,28 +46,34 @@ class GitLabClient:
         base_sha: str,
         head_sha: str,
         start_sha: str,
+        old_line: int | None = None,
     ):
         """
         创建行级评论（通过 Discussion API）。
         GitLab 行级评论需要 position 对象，比 GitHub 复杂。
+
+        参数:
+            old_line: 上下文行必须同时传 old_line + new_line
         """
         if not new_line or new_line < 1:
             logger.warning(f"[GitLab] 行号无效({new_line})，跳过行级评论: {new_path}")
             return
 
         url = f"{self.base_url}/projects/{project_id}/merge_requests/{mr_iid}/discussions"
-        payload = {
-            "body": body,
-            "position": {
-                "base_sha": base_sha,
-                "head_sha": head_sha,
-                "start_sha": start_sha,
-                "position_type": "text",
-                "old_path": new_path,
-                "new_path": new_path,
-                "new_line": new_line,
-            },
+        position = {
+            "base_sha": base_sha,
+            "head_sha": head_sha,
+            "start_sha": start_sha,
+            "position_type": "text",
+            "old_path": new_path,
+            "new_path": new_path,
+            "new_line": new_line,
         }
+        # 上下文行需要 old_line，否则 GitLab 无法生成有效 line_code
+        if old_line:
+            position["old_line"] = old_line
+
+        payload = {"body": body, "position": position}
         logger.debug(f"[GitLab] POST 行级评论 → {new_path}:{new_line}")
         async with httpx.AsyncClient() as client:
             resp = await client.post(url, headers=self.headers, json=payload)

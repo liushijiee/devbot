@@ -21,7 +21,7 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.types import Send
 
 from app.config import get_settings
-from app.graph.state import ReviewState, CriticResult, Finding
+from app.graph.state import ReviewState, CriticResult, Finding, TokenUsage
 from app.graph.nodes import (
     prepare,
     aggregate,
@@ -30,6 +30,7 @@ from app.graph.nodes import (
     _get_llm,
     _parse_findings,
     _deduplicate,
+    _extract_token_usage,
 )
 from app.harness.diff_parser import parse_gitlab_changes, FileChange
 from app.harness.file_filter import filter_files
@@ -118,12 +119,17 @@ def build_review_graph(repo_manager: RepoManager, file_changes: list[FileChange]
             findings = _parse_findings(last_message, critic_name)
             findings = fix_positions(findings, state.get("diff_text", ""))
 
+            token_usage = _extract_token_usage(result["messages"])
+
             critic_result: CriticResult = {
                 "critic_name": critic_name,
                 "findings": findings,
                 "error": None,
             }
-            logger.info(f"[CriticNode] {critic_name} 完成 → {len(findings)} findings")
+            logger.info(
+                f"[CriticNode] {critic_name} 完成 → {len(findings)} findings"
+                f" | token: in={token_usage['input_tokens']}, out={token_usage['output_tokens']}, calls={token_usage['llm_calls']}"
+            )
 
         except Exception as e:
             logger.error(f"[CriticNode] {critic_name} 失败: {e}", exc_info=True)
@@ -132,8 +138,9 @@ def build_review_graph(repo_manager: RepoManager, file_changes: list[FileChange]
                 "findings": [],
                 "error": str(e),
             }
+            token_usage: TokenUsage = {"input_tokens": 0, "output_tokens": 0, "llm_calls": 0}
 
-        return {"critic_results": [critic_result]}
+        return {"critic_results": [critic_result], "token_usage": token_usage}
 
     graph = StateGraph(ReviewState)
 
@@ -194,6 +201,7 @@ async def run_review(
 
         # ── 循环所有 bundle ──
         all_aggregated_findings: list[Finding] = []
+        total_token_usage: TokenUsage = {"input_tokens": 0, "output_tokens": 0, "llm_calls": 0}
 
         for idx, bundle in enumerate(bundles, 1):
             logger.info(f"[RunReview] ══ Bundle {idx}/{len(bundles)} ══ ({bundle.total_lines} 行, {len(bundle.files)} 文件)")
@@ -219,6 +227,12 @@ async def run_review(
             logger.info(f"[RunReview] Bundle {idx} 完成 → {len(bundle_findings)} 个 findings")
             all_aggregated_findings.extend(bundle_findings)
 
+            # 聚合本 bundle 的 Critic token 消耗
+            bundle_usage = result.get("token_usage", {})
+            total_token_usage["input_tokens"] += bundle_usage.get("input_tokens", 0)
+            total_token_usage["output_tokens"] += bundle_usage.get("output_tokens", 0)
+            total_token_usage["llm_calls"] += bundle_usage.get("llm_calls", 0)
+
         # ── 跨 bundle 去重 ──
         all_aggregated_findings = _deduplicate(all_aggregated_findings)
         logger.info(f"[RunReview] 全部 bundle 合并去重后: {len(all_aggregated_findings)} 个 findings")
@@ -232,11 +246,25 @@ async def run_review(
         reflect_result = await reflect(reflect_state, repo_manager, file_changes)
         verified_findings = reflect_result.get("verified_findings", [])
 
+        # 聚合 Reflector 的 token 消耗
+        reflect_usage = reflect_result.get("reflect_token_usage", {})
+        total_token_usage["input_tokens"] += reflect_usage.get("input_tokens", 0)
+        total_token_usage["output_tokens"] += reflect_usage.get("output_tokens", 0)
+        total_token_usage["llm_calls"] += reflect_usage.get("llm_calls", 0)
+
+        # ── 对 Reflector 修改过的 findings 重新定位行号 ──
+        # Reflector 可能修改了 existing_code，需要重新计算 line
+        diff_text_combined = "\n".join(b.diff_text for b in bundles)
+        verified_findings = fix_positions(verified_findings, diff_text_combined)
+
         # ── Report ──
         report_state: ReviewState = {"verified_findings": verified_findings}
         final = report(report_state)
 
-        logger.info(f"[RunReview] ══ 审查完成 ══ risk={final['risk_score']}/100, comments={len(final['comments'])}")
+        logger.info(
+            f"[RunReview] ══ 审查完成 ══ risk={final['risk_score']}/100, comments={len(final['comments'])}"
+            f" | token 总计: in={total_token_usage['input_tokens']}, out={total_token_usage['output_tokens']}, calls={total_token_usage['llm_calls']}"
+        )
         return final
 
     finally:

@@ -40,7 +40,7 @@ user: |
   [
     {
       "file": "文件路径",
-      "line": 行号,
+      "existing_code": "你正在评论的那行代码的原文（逐字复述，不要修改或省略）",
       "severity": "critical | warning | info",
       "title": "质量问题简述",
       "description": "问题描述：为什么影响可维护性",
@@ -49,4 +49,5 @@ user: |
     }
   ]
   ```
+  注意：existing_code 必须是 diff 中真实存在的代码行原文，不要改写。
   如果没有发现问题，返回空数组 `[]`。

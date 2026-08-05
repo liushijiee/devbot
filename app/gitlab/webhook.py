@@ -131,19 +131,28 @@ async def _run_review(webhook_data: dict):
 
         for i, comment in enumerate(comments, 1):
             try:
-                logger.debug(f"[审查] 发布行评论 {i}/{len(comments)}: {comment['file']}:{comment['line']}")
-                await gitlab.create_line_comment(
-                    project_id=project_id,
-                    mr_iid=mr_iid,
-                    body=comment["body"],
-                    new_path=comment["file"],
-                    new_line=comment["line"],
-                    base_sha=base_sha,
-                    head_sha=head_sha_detail,
-                    start_sha=start_sha,
-                )
+                line = comment.get("line")
+                if line and isinstance(line, int) and line >= 1:
+                    # 有有效行号 → 发行级评论
+                    logger.debug(f"[审查] 发布行评论 {i}/{len(comments)}: {comment['file']}:{line}")
+                    await gitlab.create_line_comment(
+                        project_id=project_id,
+                        mr_iid=mr_iid,
+                        body=comment["body"],
+                        new_path=comment["file"],
+                        new_line=line,
+                        base_sha=base_sha,
+                        head_sha=head_sha_detail,
+                        start_sha=start_sha,
+                        old_line=comment.get("old_line"),
+                    )
+                else:
+                    # 无法定位行号 → 降级为 MR 级评论
+                    fallback_body = f"📍 `{comment['file']}`\n\n{comment['body']}"
+                    logger.debug(f"[审查] 发布文件级评论 {i}/{len(comments)}: {comment['file']}")
+                    await gitlab.create_mr_note(project_id, mr_iid, fallback_body)
             except Exception as e:
-                logger.warning(f"[审查] 行评论失败 {comment['file']}:{comment['line']} → {e}")
+                logger.warning(f"[审查] 评论发布失败 {comment.get('file', '?')} → {e}")
 
         if head_sha:
             if risk_score >= settings.risk_block_threshold:
