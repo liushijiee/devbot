@@ -100,12 +100,12 @@ async def _run_review(webhook_data: dict):
 
     try:
 
-        # if head_sha:
-        #     logger.debug(f"[审查] 设置 Commit Status → running")
-        #     # 相当于修改CI状态为running
-        #     await gitlab.set_commit_status(
-        #         project_id, head_sha, "running", "DevBot 正在审查..."
-        #     )
+        if head_sha:
+            logger.debug(f"[审查] 设置 Commit Status → running")
+            # 相当于修改CI状态为running
+            await gitlab.set_commit_status(
+                project_id, head_sha, "running", "DevBot 正在审查..."
+            )
 
         logger.info(f"[审查] 获取 MR diff...")
         changes = await gitlab.get_mr_diff(project_id, mr_iid)
@@ -118,68 +118,68 @@ async def _run_review(webhook_data: dict):
                 )
             return
 
-    #     logger.info(f"[审查] 进入 LangGraph 审查流程...")
-    #     result = await run_review(
-    #         changes=changes,
-    #         repo_url=repo_url,
-    #         branch=source_branch,
-    #         mr_iid=mr_iid,
-    #         project_id=project_id,
-    #         head_sha=head_sha,
-    #     )
+        logger.info(f"[审查] 进入 LangGraph 审查流程...")
+        result = await run_review(
+            changes=changes,
+            repo_url=repo_url,
+            branch=source_branch,
+            mr_iid=mr_iid,
+            project_id=project_id,
+            head_sha=head_sha,
+        )
 
-    #     summary = result.get("summary", "")
-    #     comments = result.get("comments", [])
-    #     risk_score = result.get("risk_score", 0)
-    #     logger.info(f"[审查] LangGraph 完成 → risk_score={risk_score}, comments={len(comments)}")
+        summary = result.get("summary", "")
+        comments = result.get("comments", [])
+        risk_score = result.get("risk_score", 0)
+        logger.info(f"[审查] LangGraph 完成 → risk_score={risk_score}, comments={len(comments)}")
 
-    #     if summary:
-    #         logger.debug(f"[审查] 发布 MR 摘要评论 ({len(summary)} 字符)")
-    #         await gitlab.create_mr_note(project_id, mr_iid, summary)
+        if summary:
+            logger.debug(f"[审查] 发布 MR 摘要评论 ({len(summary)} 字符)")
+            await gitlab.create_mr_note(project_id, mr_iid, summary)
 
-    #     mr_detail = await gitlab.get_mr_detail(project_id, mr_iid)
-    #     base_sha = mr_detail.get("diff_refs", {}).get("base_sha", "")
-    #     start_sha = mr_detail.get("diff_refs", {}).get("start_sha", "")
-    #     head_sha_detail = mr_detail.get("diff_refs", {}).get("head_sha", head_sha)
+        mr_detail = await gitlab.get_mr_detail(project_id, mr_iid)
+        base_sha = mr_detail.get("diff_refs", {}).get("base_sha", "")
+        start_sha = mr_detail.get("diff_refs", {}).get("start_sha", "")
+        head_sha_detail = mr_detail.get("diff_refs", {}).get("head_sha", head_sha)
 
-    #     for i, comment in enumerate(comments, 1):
-    #         try:
-    #             line = comment.get("line")
-    #             if line and isinstance(line, int) and line >= 1:
-    #                 # 有有效行号 → 发行级评论
-    #                 logger.debug(f"[审查] 发布行评论 {i}/{len(comments)}: {comment['file']}:{line}")
-    #                 await gitlab.create_line_comment(
-    #                     project_id=project_id,
-    #                     mr_iid=mr_iid,
-    #                     body=comment["body"],
-    #                     new_path=comment["file"],
-    #                     new_line=line,
-    #                     base_sha=base_sha,
-    #                     head_sha=head_sha_detail,
-    #                     start_sha=start_sha,
-    #                     old_line=comment.get("old_line"),
-    #                 )
-    #             else:
-    #                 # 无法定位行号 → 降级为 MR 级评论
-    #                 fallback_body = f"📍 `{comment['file']}`\n\n{comment['body']}"
-    #                 logger.debug(f"[审查] 发布文件级评论 {i}/{len(comments)}: {comment['file']}")
-    #                 await gitlab.create_mr_note(project_id, mr_iid, fallback_body)
-    #         except Exception as e:
-    #             logger.warning(f"[审查] 评论发布失败 {comment.get('file', '?')} → {e}")
+        for i, comment in enumerate(comments, 1):
+            try:
+                line = comment.get("line")
+                if line and isinstance(line, int) and line >= 1:
+                    # 有有效行号 → 发行级评论
+                    logger.debug(f"[审查] 发布行评论 {i}/{len(comments)}: {comment['file']}:{line}")
+                    await gitlab.create_line_comment(
+                        project_id=project_id,
+                        mr_iid=mr_iid,
+                        body=comment["body"],
+                        new_path=comment["file"],
+                        new_line=line,
+                        base_sha=base_sha,
+                        head_sha=head_sha_detail,
+                        start_sha=start_sha,
+                        old_line=comment.get("old_line"),
+                    )
+                else:
+                    # 无法定位行号 → 降级为 MR 级评论
+                    fallback_body = f"📍 `{comment['file']}`\n\n{comment['body']}"
+                    logger.debug(f"[审查] 发布文件级评论 {i}/{len(comments)}: {comment['file']}")
+                    await gitlab.create_mr_note(project_id, mr_iid, fallback_body)
+            except Exception as e:
+                logger.warning(f"[审查] 评论发布失败 {comment.get('file', '?')} → {e}")
 
-    #     if head_sha:
-    #         if risk_score >= settings.risk_block_threshold:
-    #             await gitlab.set_commit_status(
-    #                 project_id, head_sha, "failed",
-    #                 f"风险分 {risk_score}/100，建议阻断合并"
-    #             )
-    #         else:
-    #             await gitlab.set_commit_status(
-    #                 project_id, head_sha, "success",
-    #                 f"审查通过，风险分 {risk_score}/100"
-    #             )
+        if head_sha:
+            if risk_score >= settings.risk_block_threshold:
+                await gitlab.set_commit_status(
+                    project_id, head_sha, "failed",
+                    f"风险分 {risk_score}/100，建议阻断合并"
+                )
+            else:
+                await gitlab.set_commit_status(
+                    project_id, head_sha, "success",
+                    f"审查通过，风险分 {risk_score}/100"
+                )
 
-    #     logger.info(f"[审查] ══ 完成 ══ MR !{mr_iid} | risk={risk_score}/100 | comments={len(comments)}")
+        logger.info(f"[审查] ══ 完成 ══ MR !{mr_iid} | risk={risk_score}/100 | comments={len(comments)}")
 
     except Exception as e:
         logger.error(f"[DevBot] MR !{mr_iid} 审查失败: {e}", exc_info=True)

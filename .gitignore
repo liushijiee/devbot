@@ -11,6 +11,7 @@ tests/
 logs/
 
 data/
+eval/*.json
 
 # Environment
 .env

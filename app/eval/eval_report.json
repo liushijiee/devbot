@@ -1,0 +1,42 @@
+{
+  "dataset": "app/eval/aacr_dataset_test.json",
+  "metrics": {
+    "precision": 0.3333,
+    "recall": 0.25,
+    "f1": 0.2857,
+    "total_comments": 3,
+    "correct_comments": 1,
+    "total_ground_truth": 4
+  },
+  "per_case": [
+    {
+      "case_id": "langflow-ai__langflow_pr5896",
+      "precision": 0.3333,
+      "recall": 0.25,
+      "f1": 0.2857,
+      "risk_score": 35,
+      "comments": [
+        {
+          "file": "src/backend/base/langflow/graph/vertex/base.py",
+          "line": 675,
+          "severity": null,
+          "body": "**[WARNING]** 异步函数调用未使用 await 关键字\n\n在 _get_result 方法中，当组件尚未构建时，_log_transaction_async 被调用但没有使用 await。这将导致日志记录任务被创建但不会等待其完成。\n\n**建议**: 确保对 _log_transaction_async 的调用使用 await，以正确处理异步操作。\n\n---\n*by DevBot (correctness critic) | confidence: 0.90*"
+        },
+        {
+          "file": "src/backend/base/langflow/graph/vertex/base.py",
+          "line": 651,
+          "severity": null,
+          "body": "**[WARNING]** 未处理的 Promise rejection\n\n在 _log_transaction_async 方法中，创建了一个异步任务 task 来执行 log_transaction 函数。但是没有为这个任务添加异常处理机制，如果 log_transaction 抛出异常，那么这个异常将不会被捕获，可能导致未处理的 Promise rejection。\n\n**建议**: 建议为 task 添加异常处理机制，例如使用 try-except 结构或者通过 add_done_callback 来检查任务是否成功完成。\n\n---\n*by DevBot (security critic) | confidence: 0.80*"
+        },
+        {
+          "file": "src/frontend/src/utils/buildUtils.ts",
+          "line": 251,
+          "severity": null,
+          "body": "**[INFO]** 类型注解缺失\n\nbuildFlowVertices 函数中的 errorMessages 变量缺少类型注解。虽然这不是一个直接的安全问题，但良好的类型注解有助于提高代码的可读性和维护性。\n\n**建议**: 建议为 errorMessages 添加适当的类型注解。\n\n---\n*by DevBot (security critic) | confidence: 0.90*"
+        }
+      ]
+    }
+  ],
+  "calibration_data_count": 3,
+  "calibrator_fitted": false
+}

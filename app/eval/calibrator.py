@@ -6,6 +6,11 @@ Platt 校准器
   LLM 说 confidence=0.9，但实际正确率可能只有 0.6。
   Platt Scaling 用一条 sigmoid 曲线拟合 (原始confidence → 真实正确率) 的映射。
   本质就是对 confidence 做 Logistic Regression。
+
+数据来源：
+  harness.run_eval_suite() 返回的 calibration_data，
+  即 [(confidence, is_correct), ...] —— confidence 是 Critic 的原始输出，
+  is_correct 是与 ground truth 匹配的客观结果。
 """
 
 import json
@@ -72,14 +77,17 @@ class PlattCalibrator:
         proba = self._model.predict_proba(X)[0][1]
         return round(float(proba), 4)
 
-    def calibrate_findings(self, findings: list[dict]) -> list[dict]:
-        """批量校准 findings 中的 confidence 字段。"""
+    def calibrate_comments(self, comments: list[dict]) -> list[dict]:
+        """批量校准评论中的 confidence（从 body 中提取的置信度仅作参考展示）。"""
+        from app.eval.harness import extract_confidence
+
         calibrated = []
-        for f in findings:
-            f_copy = dict(f)
-            f_copy["raw_confidence"] = f.get("confidence", 0.5)
-            f_copy["confidence"] = self.calibrate(f.get("confidence", 0.5))
-            calibrated.append(f_copy)
+        for c in comments:
+            c_copy = dict(c)
+            raw = extract_confidence(c.get("body", ""))
+            c_copy["raw_confidence"] = raw
+            c_copy["calibrated_confidence"] = self.calibrate(raw)
+            calibrated.append(c_copy)
         return calibrated
 
     def save(self, path: str | Path):
