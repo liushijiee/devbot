@@ -14,7 +14,11 @@ LangGraph 图构建器
 - run_review 循环所有 bundle，确保大 MR 不遗漏
 """
 
+import asyncio
+import hashlib
+import json
 import logging
+from pathlib import Path
 from typing import Any
 
 from langgraph.graph import StateGraph, START, END
@@ -47,6 +51,45 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.prebuilt import create_react_agent
 
 logger = logging.getLogger(__name__)
+
+# ── Checkpoint 持久化 ──
+CHECKPOINT_DIR = Path(__file__).resolve().parent.parent.parent / "checkpoints"
+
+def _checkpoint_path(key: str) -> Path:
+    CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+    return CHECKPOINT_DIR / f"{key}.json"
+
+def _load_checkpoint(key: str) -> dict | None:
+    """加载 Checkpoint，不存在或损坏返回 None。"""
+    if not key:
+        return None
+    path = _checkpoint_path(key)
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+    return None
+
+def _save_checkpoint(key: str, data: dict):
+    """保存 Checkpoint（每完成一个 bundle 调用一次）。"""
+    if not key:
+        return
+    path = _checkpoint_path(key)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+def _cleanup_checkpoint(key: str):
+    """审查成功后清理 Checkpoint。"""
+    if not key:
+        return
+    path = _checkpoint_path(key)
+    if path.exists():
+        path.unlink()
+
+def _bundle_hash(diff_text: str) -> str:
+    """对 bundle 的 diff 内容计算指纹（MD5 前 16 位）。"""
+    return hashlib.md5(diff_text.encode()).hexdigest()[:16]
+
 
 @trace_node("3. build_review_graph")
 def build_review_graph(repo_manager: RepoManager, file_changes: list[FileChange]):
@@ -82,64 +125,73 @@ def build_review_graph(repo_manager: RepoManager, file_changes: list[FileChange]
     @trace_node("node3. critic_node")
     async def critic_node(state: dict) -> dict:
         """
-        单个 Critic 节点。
+        单个 Critic 节点（带指数退避重试）。
         接收 Send 传入的 state（含 critic_name），运行 ReAct Agent。
+        失败时最多重试 2 次（延迟 1s, 2s），避免 LLM API 瞬时故障导致审查中断。
         """
         critic_name = state["critic_name"]
         logger.info(f"[CriticNode] ══ 启动: {critic_name} ══")
 
-        try:
+        max_retries = 2
+        last_error: Exception | None = None
 
-            from app.prompts.registry import load_prompt
-            template = load_prompt(critic_name)
-            system_prompt = template.system
-            user_prompt = template.format_user(
-                changed_files=state.get("changed_files", ""),
-                diff_text=state.get("diff_text", ""),
-                rules=state.get("rules", ""),
-            )
+        for attempt in range(max_retries + 1):
+            try:
+                from app.prompts.registry import load_prompt
+                template = load_prompt(critic_name)
+                system_prompt = template.system
+                user_prompt = template.format_user(
+                    changed_files=state.get("changed_files", ""),
+                    diff_text=state.get("diff_text", ""),
+                    rules=state.get("rules", ""),
+                )
 
-            tools = create_tools(repo_manager, file_changes)
+                tools = create_tools(repo_manager, file_changes)
+                llm = _get_llm()
+                agent = create_react_agent(
+                    model=llm,
+                    tools=tools,
+                    prompt=SystemMessage(content=system_prompt),
+                )
+                result = await agent.ainvoke(
+                    {"messages": [HumanMessage(content=user_prompt)]},
+                    config={"recursion_limit": settings.max_tool_rounds * 2 + 5},
+                )
 
-            logger.info(f"[tool] {', '.join(str(tool) for tool in tools)}")
+                last_message = result["messages"][-1].content
+                findings = _parse_findings(last_message, critic_name)
+                findings = fix_positions(findings, state.get("diff_text", ""))
 
-            llm = _get_llm()
-            agent = create_react_agent(
-                model=llm,
-                tools=tools,
-                prompt=SystemMessage(content=system_prompt),
-            )
-            # logger.info(f"user_prompt: {user_prompt}")
-            result = await agent.ainvoke(
-                {"messages": [HumanMessage(content=user_prompt)]},
-                config={"recursion_limit": settings.max_tool_rounds * 2 + 5},
-            )
+                token_usage = _extract_token_usage(result["messages"])
 
-            last_message = result["messages"][-1].content
-            findings = _parse_findings(last_message, critic_name)
-            findings = fix_positions(findings, state.get("diff_text", ""))
+                critic_result: CriticResult = {
+                    "critic_name": critic_name,
+                    "findings": findings,
+                    "error": None,
+                }
+                logger.info(
+                    f"[CriticNode] {critic_name} 完成 → {len(findings)} findings"
+                    f" | token: in={token_usage['input_tokens']}, out={token_usage['output_tokens']}, calls={token_usage['llm_calls']}"
+                )
+                return {"critic_results": [critic_result], "token_usage": token_usage}
 
-            token_usage = _extract_token_usage(result["messages"])
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries:
+                    delay = 1.0 * (2 ** attempt)  # 1s, 2s
+                    logger.warning(
+                        f"[CriticNode] {critic_name} 第{attempt+1}次失败, {delay:.1f}s后重试: {e}"
+                    )
+                    await asyncio.sleep(delay)
 
-            critic_result: CriticResult = {
-                "critic_name": critic_name,
-                "findings": findings,
-                "error": None,
-            }
-            logger.info(
-                f"[CriticNode] {critic_name} 完成 → {len(findings)} findings"
-                f" | token: in={token_usage['input_tokens']}, out={token_usage['output_tokens']}, calls={token_usage['llm_calls']}"
-            )
-
-        except Exception as e:
-            logger.error(f"[CriticNode] {critic_name} 失败: {e}", exc_info=True)
-            critic_result: CriticResult = {
-                "critic_name": critic_name,
-                "findings": [],
-                "error": str(e),
-            }
-            token_usage: TokenUsage = {"input_tokens": 0, "output_tokens": 0, "llm_calls": 0}
-
+        # 所有重试都失败
+        logger.error(f"[CriticNode] {critic_name} 重试{max_retries}次后仍失败: {last_error}", exc_info=True)
+        critic_result: CriticResult = {
+            "critic_name": critic_name,
+            "findings": [],
+            "error": str(last_error),
+        }
+        token_usage: TokenUsage = {"input_tokens": 0, "output_tokens": 0, "llm_calls": 0}
         return {"critic_results": [critic_result], "token_usage": token_usage}
 
     graph = StateGraph(ReviewState)
@@ -163,20 +215,24 @@ async def run_review(
     branch: str,
     mr_iid: int = 0,
     project_id: int = 0,
+    head_sha: str = "",
 ) -> dict:
     """
-    执行完整审查流程（多 bundle 支持）。
+    执行完整审查流程（多 bundle 支持 + Checkpoint 断点续跑）。
 
     流程：
     1. clone 仓库
     2. parse → filter → group → 得到所有 bundles
     3. 对每个 bundle 调用图（prepare → critics → aggregate）
+       - 每完成一个 bundle 持久化 Checkpoint
+       - 进程崩溃后重新触发时从 Checkpoint 续跑
     4. 合并所有 bundle 的 findings + 去重
     5. reflect（带工具验证）
     6. report（风险分 + 评论）
     """
     settings = get_settings()
     repo_manager = RepoManager()
+    ckpt_key = f"{project_id}_{mr_iid}" if project_id and mr_iid else ""
 
     try:
         safe_url = repo_url.split('@')[-1] if '@' in repo_url else repo_url[:60]
@@ -196,14 +252,29 @@ async def run_review(
         all_file_paths = [f.path for f in filtered]
         logger.info(f"[RunReview] {len(filtered)} 个文件，分为 {len(bundles)} 个 bundle")
 
+        # ── 加载 Checkpoint（基于 bundle diff 内容 hash 判断是否已完成）──
+        ckpt = _load_checkpoint(ckpt_key)
+        completed_cache: dict[str, dict] = {}  # {bundle_hash: {findings, file_paths}}
+        all_aggregated_findings: list[Finding] = []
+        total_token_usage: TokenUsage = {"input_tokens": 0, "output_tokens": 0, "llm_calls": 0}
+        if ckpt:
+            completed_cache = ckpt.get("completed", {})
+            total_token_usage = ckpt.get("token_usage", {"input_tokens": 0, "output_tokens": 0, "llm_calls": 0})
+            logger.info(f"[RunReview] 加载 Checkpoint: 已有 {len(completed_cache)} 个已完成 bundle 缓存")
+
         # ── 构建图（单 bundle 处理器）──
         graph = build_review_graph(repo_manager, file_changes)
 
         # ── 循环所有 bundle ──
-        all_aggregated_findings: list[Finding] = []
-        total_token_usage: TokenUsage = {"input_tokens": 0, "output_tokens": 0, "llm_calls": 0}
-
         for idx, bundle in enumerate(bundles, 1):
+            b_hash = _bundle_hash(bundle.diff_text)
+
+            # 基于 diff 内容 hash 判断是否已完成
+            if b_hash in completed_cache:
+                cached = completed_cache[b_hash]
+                all_aggregated_findings.extend(cached.get("findings", []))
+                logger.info(f"[RunReview] Bundle {idx} diff 未变 (hash={b_hash[:8]})，复用缓存 {len(cached.get('findings', []))} 个 findings")
+                continue
             logger.info(f"[RunReview] ══ Bundle {idx}/{len(bundles)} ══ ({bundle.total_lines} 行, {len(bundle.files)} 文件)")
 
             rules_text = match_rules(bundle.files)
@@ -232,6 +303,17 @@ async def run_review(
             total_token_usage["input_tokens"] += bundle_usage.get("input_tokens", 0)
             total_token_usage["output_tokens"] += bundle_usage.get("output_tokens", 0)
             total_token_usage["llm_calls"] += bundle_usage.get("llm_calls", 0)
+
+            # ── 保存 Checkpoint（基于 bundle diff hash）──
+            if ckpt_key:
+                completed_cache[b_hash] = {
+                    "file_paths": bundle.file_paths,
+                    "findings": bundle_findings,
+                }
+                _save_checkpoint(ckpt_key, {
+                    "completed": completed_cache,
+                    "token_usage": total_token_usage,
+                })
 
         # ── 跨 bundle 去重 ──
         all_aggregated_findings = _deduplicate(all_aggregated_findings)
@@ -265,6 +347,7 @@ async def run_review(
             f"[RunReview] ══ 审查完成 ══ risk={final['risk_score']}/100, comments={len(final['comments'])}"
             f" | token 总计: in={total_token_usage['input_tokens']}, out={total_token_usage['output_tokens']}, calls={total_token_usage['llm_calls']}"
         )
+
         return final
 
     finally:

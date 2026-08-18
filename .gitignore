@@ -6,6 +6,11 @@ __pycache__/
 .venv/
 venv/
 env/
+tests/
+logs/
+docs/
+data/
+*.txt
 
 # Environment
 .env
@@ -21,6 +26,7 @@ Thumbs.db
 
 # Project
 /tmp/
+checkpoints/
 *.log
 goat.md
 _lib/
