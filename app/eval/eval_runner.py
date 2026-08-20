@@ -58,14 +58,15 @@ def resolve_repo_url(case, repos_dir: Path | None, offline: bool = True) -> str:
     # case_id 形如 "owner__name_pr123"，去掉 _prXXX 后缀即缓存目录名
     cache_name = case.case_id.rsplit("_pr", 1)[0]
     local_repo = repos_dir / cache_name
-    if (local_repo / ".git").exists():
+    # 命中本地缓存：含 .git 的真实仓库，或纯源码目录（二者都直接按现状使用）
+    if (local_repo / ".git").exists() or local_repo.is_dir():
         return str(local_repo.resolve())
 
     if offline:
         raise FileNotFoundError(
             f"[EvalRunner] 离线模式：{case.case_id} 的本地缓存不存在: {local_repo}\n"
-            f"请先从外网把该仓库（含目标 commit）准备好并放到该路径，"
-            f"目录名须为 '<owner>__<name>' 且含 .git。"
+            f"请先从外网把该仓库（停留在目标 commit 状态）准备好并放到该路径，"
+            f"目录名须为 '<owner>__<name>'（可含 .git，也可为纯源码目录）。"
         )
     logger.warning(f"[EvalRunner] {case.case_id} 无本地缓存，将走远程: {case.repo_url}")
     return case.repo_url

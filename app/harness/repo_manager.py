@@ -82,12 +82,27 @@ class RepoManager:
         logger.info(f"[Repo] 开始 clone → {self._clone_path}")
 
         # ── 本地仓库（离线/内网）──
+        # 约定：用户已在 data/aacr_repos/<owner>__<name> 下准备好"停在目标 commit 状态"的代码，
+        # 直接按现状使用，不再执行 git checkout <target_commit>（内网无法 fetch、也不必切换）。
         if _is_local_repo(repo_url):
-            logger.info(f"[Repo] 检测到本地仓库，执行离线 clone: {repo_url}")
-            await self._run_git([
-                "git", "clone", repo_url, str(self._clone_path),
-            ])
-            await self._checkout_commit(str(self._clone_path), branch)
+            src = Path(repo_url)
+            if (src / ".git").exists():
+                logger.info(f"[Repo] 检测到本地仓库，按现状离线 clone（不切换）: {repo_url}")
+                await self._run_git([
+                    "git", "clone", repo_url, str(self._clone_path),
+                ])
+                # 仅做诊断：目录当前 HEAD 与数据集 branch 不一致时告警，但不强制切换
+                if _FULL_SHA_PATTERN.match(branch or ""):
+                    head = await self._current_head(str(self._clone_path))
+                    if head and head.lower() != branch.lower():
+                        logger.warning(
+                            f"[Repo] 目录当前 HEAD({head[:8]}) 与数据集 branch({branch[:8]}) 不一致，"
+                            f"将直接使用目录现状——请确认 data/aacr_repos 下已停在目标 commit"
+                        )
+            else:
+                # 纯源码目录（无 .git）：直接拷贝使用，完全不碰 git
+                logger.info(f"[Repo] 检测到纯源码目录(无 .git)，直接拷贝使用: {repo_url}")
+                shutil.copytree(src, self._clone_path)
             logger.info(f"[Repo] clone 完成(本地): {self._clone_path}")
             return self._clone_path
 
@@ -123,21 +138,21 @@ class RepoManager:
         logger.info(f"[Repo] clone 完成: {self._clone_path}")
         return self._clone_path
 
-    async def _checkout_commit(self, path: str, branch: str):
-        """
-        在已 clone 好的本地副本上 checkout 到目标 commit / 分支。
-
-        branch 可能是 40 位 sha 或分支名：
-        - 先尝试直接 checkout（本地 clone 已含该 commit 时秒过）；
-        - 失败则从 origin（即缓存源仓库，本地路径）fetch 后再 checkout FETCH_HEAD。
-        全程不连外网。
-        """
+    async def _current_head(self, path: str) -> str | None:
+        """返回 path 仓库当前 HEAD 的 sha（失败返回 None，不抛异常，仅用于诊断）。"""
         try:
-            await self._run_git(["git", "-C", path, "checkout", branch])
-        except RuntimeError:
-            logger.warning(f"[Repo] checkout {branch} 失败，从源仓库 fetch 后重试")
-            await self._run_git(["git", "-C", path, "fetch", "origin", branch])
-            await self._run_git(["git", "-C", path, "checkout", "FETCH_HEAD"])
+            proc = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: subprocess.run(
+                    ["git", "-C", path, "rev-parse", "HEAD"],
+                    capture_output=True, timeout=60,
+                ),
+            )
+            if proc.returncode == 0:
+                return proc.stdout.decode(errors="replace").strip()
+        except Exception:
+            pass
+        return None
 
     def _sha_checkout_commands(self, repo_url: str, sha: str) -> list[str]:
         """构造按 commit sha 检出的一条 git -C 链式命令（init → remote add → fetch → checkout）。"""
