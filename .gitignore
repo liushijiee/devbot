@@ -11,7 +11,7 @@ tests/
 logs/
 
 data/
-eval/*.json
+/app/eval/*.json
 
 # Environment
 .env
@@ -27,7 +27,6 @@ Thumbs.db
 
 # Project
 /tmp/
-checkpoints/
 *.log
 goat.md
 _lib/

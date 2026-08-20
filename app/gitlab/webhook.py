@@ -24,9 +24,6 @@ from app.graph.builder import run_review
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# ── 幂等性去重：同一个 (project, MR, commit_sha) 只审查一次 ──
-_reviewed_keys: set[str] = set()
-
 def verify_token(request_token: str, secret: str) -> bool:
     return request_token == secret
 
@@ -58,15 +55,6 @@ async def gitlab_webhook(request: Request):
     if action not in ("open", "update"):
         logger.info(f"[Webhook] 忽略 action: {action}")
         return {"msg": f"ignored action: {action}"}
-
-    # ── 幂等性检查：同一个 commit sha 不重复审查 ──
-    project_id = data.get("project", {}).get("id", 0)
-    head_sha = data.get("object_attributes", {}).get("last_commit", {}).get("id", "")
-    idempotent_key = f"{project_id}:{mr_iid}:{head_sha}"
-    # if idempotent_key in _reviewed_keys:
-    #     logger.info(f"[Webhook] MR !{mr_iid} sha={head_sha[:8]} 已审查过，跳过")
-    #     return {"msg": "already reviewed", "mr": mr_iid}
-    # _reviewed_keys.add(idempotent_key)
 
     logger.info(f"[Webhook] 启动异步审查任务 MR !{mr_iid}")
     asyncio.create_task(_run_review(data))
@@ -125,7 +113,6 @@ async def _run_review(webhook_data: dict):
             branch=source_branch,
             mr_iid=mr_iid,
             project_id=project_id,
-            head_sha=head_sha,
         )
 
         summary = result.get("summary", "")
@@ -183,11 +170,6 @@ async def _run_review(webhook_data: dict):
 
     except Exception as e:
         logger.error(f"[DevBot] MR !{mr_iid} 审查失败: {e}", exc_info=True)
-
-        # 审查失败：释放幂等 key，允许下次重新触发
-        idempotent_key = f"{project_id}:{mr_iid}:{head_sha}"
-        _reviewed_keys.discard(idempotent_key)
-        logger.info(f"[幂等] 已释放 key: {idempotent_key}")
 
         if head_sha:
             try:

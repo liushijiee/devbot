@@ -54,7 +54,7 @@ python -m app.eval.eval_runner --dataset app/eval/aacr_dataset.json
 
 # 自定义输出路径
 python -m app.eval.eval_runner `
-  --dataset app/eval/aacr_dataset.json `
+  --dataset app/eval/aacr_dataset_test.json `
   --output app/eval/eval_report.json `
   --calibrator app/eval/calibrator.json
 ```
