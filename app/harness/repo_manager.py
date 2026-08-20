@@ -33,6 +33,19 @@ logger = logging.getLogger(__name__)
 _FULL_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$", re.IGNORECASE)
 
 
+def _is_local_repo(url: str) -> bool:
+    """
+    判断 repo_url 是否为本地仓库路径（文件/目录），而非需要联网的远程协议。
+
+    远程协议（视为联网，走 clone --branch / fetch sha 逻辑）：
+        http(s)://, git://, ssh://, git@host:
+    file:// 及绝对/相对路径、Windows 盘符路径一律当作本地路径。
+    """
+    if re.match(r"^(https?://|git://|ssh://|git@)", url):
+        return False
+    return True
+
+
 class RepoManager:
     """管理仓库的 clone 生命周期。"""
 
@@ -48,9 +61,16 @@ class RepoManager:
 
     async def clone(self, repo_url: str, branch: str) -> Path:
         """
-        浅克隆仓库到临时目录。
-        branch 为分支名/tag 时：git clone --depth=1 --single-branch
-        branch 为完整 commit sha 时：init + fetch <sha>（git clone --branch 不支持 sha）
+        克隆仓库到临时目录。
+
+        分支判断分三层：
+        1. repo_url 是本地路径（内网/离线场景：data/aacr_repos 下的缓存副本）
+           → 直接本地 clone（默认硬链接，秒级），再 checkout 到目标 commit/分支。
+             全程不触碰外网，离线安全。
+        2. repo_url 是远程地址且 branch 为完整 commit sha
+           → init + fetch <sha>（git clone --branch 不支持 sha）。
+        3. repo_url 是远程地址且 branch 为分支名/tag
+           → git clone --depth=1 --single-branch --branch <branch>。
         """
         settings = get_settings()
         base_dir = Path(settings.repo_clone_dir)
@@ -61,6 +81,17 @@ class RepoManager:
         shutil.rmtree(self._clone_path)
         logger.info(f"[Repo] 开始 clone → {self._clone_path}")
 
+        # ── 本地仓库（离线/内网）──
+        if _is_local_repo(repo_url):
+            logger.info(f"[Repo] 检测到本地仓库，执行离线 clone: {repo_url}")
+            await self._run_git([
+                "git", "clone", repo_url, str(self._clone_path),
+            ])
+            await self._checkout_commit(str(self._clone_path), branch)
+            logger.info(f"[Repo] clone 完成(本地): {self._clone_path}")
+            return self._clone_path
+
+        # ── 远程仓库（需联网）──
         if _FULL_SHA_PATTERN.match(branch or ""):
             cmd = self._sha_checkout_commands(repo_url, branch)
         else:
@@ -91,6 +122,22 @@ class RepoManager:
 
         logger.info(f"[Repo] clone 完成: {self._clone_path}")
         return self._clone_path
+
+    async def _checkout_commit(self, path: str, branch: str):
+        """
+        在已 clone 好的本地副本上 checkout 到目标 commit / 分支。
+
+        branch 可能是 40 位 sha 或分支名：
+        - 先尝试直接 checkout（本地 clone 已含该 commit 时秒过）；
+        - 失败则从 origin（即缓存源仓库，本地路径）fetch 后再 checkout FETCH_HEAD。
+        全程不连外网。
+        """
+        try:
+            await self._run_git(["git", "-C", path, "checkout", branch])
+        except RuntimeError:
+            logger.warning(f"[Repo] checkout {branch} 失败，从源仓库 fetch 后重试")
+            await self._run_git(["git", "-C", path, "fetch", "origin", branch])
+            await self._run_git(["git", "-C", path, "checkout", "FETCH_HEAD"])
 
     def _sha_checkout_commands(self, repo_url: str, sha: str) -> list[str]:
         """构造按 commit sha 检出的一条 git -C 链式命令（init → remote add → fetch → checkout）。"""

@@ -32,20 +32,41 @@ from app.graph.builder import run_review
 logger = logging.getLogger("eval_runner")
 
 
-def resolve_repo_url(case, repos_dir: Path | None) -> str:
+def resolve_repo_url(case, repos_dir: Path | None, offline: bool = True) -> str:
     """
-    评测时优先使用本地仓库缓存（convert_aacr_bench 转换时 clone 的副本），
-    避免每次评测都从 GitHub 拉大仓库（网络不稳定时必挂）。
-    git 支持从本地路径 clone，RepoManager 的 sha 检出逻辑同样适用。
-    缓存目录约定: <repos_dir>/<owner>__<name>（与转换脚本一致）
+    评测时优先使用本地仓库缓存（从外网准备好、放到 data/aacr_repos 下的副本），
+    避免评测时连接 GitHub（内网/离线环境无法访问外网）。
+
+    - 缓存命中：直接返回本地路径，RepoManager 会把它当作 clone 源
+      （git 支持从本地路径 clone，sha / 分支检出逻辑同样适用）。
+    - 缓存缺失：
+        * offline=True（默认，内网场景）：直接抛错，绝不回退到 GitHub
+          （连不上会卡死/超时，且内网本就不该走外网）。
+        * offline=False（--online）：回退到远程 repo_url（需联网）。
+
+    缓存目录约定: <repos_dir>/<owner>__<name>（与 convert_aacr_bench 一致）
     """
     if repos_dir is None:
+        if offline:
+            raise RuntimeError(
+                "[EvalRunner] 离线模式已开启，但未指定 repos_dir（本地缓存目录），"
+                "无法回退到远程 GitHub。请通过 --repos-dir 指定本地仓库目录，"
+                "或加 --online 显式允许远程拉取。"
+            )
         return case.repo_url
+
     # case_id 形如 "owner__name_pr123"，去掉 _prXXX 后缀即缓存目录名
     cache_name = case.case_id.rsplit("_pr", 1)[0]
     local_repo = repos_dir / cache_name
     if (local_repo / ".git").exists():
         return str(local_repo.resolve())
+
+    if offline:
+        raise FileNotFoundError(
+            f"[EvalRunner] 离线模式：{case.case_id} 的本地缓存不存在: {local_repo}\n"
+            f"请先从外网把该仓库（含目标 commit）准备好并放到该路径，"
+            f"目录名须为 '<owner>__<name>' 且含 .git。"
+        )
     logger.warning(f"[EvalRunner] {case.case_id} 无本地缓存，将走远程: {case.repo_url}")
     return case.repo_url
 
@@ -54,8 +75,9 @@ async def run_eval(
     dataset_path: str,
     limit: int | None = None,
     output_path: str = "app/eval/eval_report.json",
-    calibrator_path: str = "app/eval/calibrator.json",
-    repos_dir: str | None = "data/aacr_repos",
+        calibrator_path: str = "app/eval/calibrator.json",
+        repos_dir: str | None = "data/aacr_repos",
+        offline: bool = True,
 ) -> dict:
     """
     端到端评测主流程。
@@ -66,6 +88,9 @@ async def run_eval(
         output_path: 评测报告输出路径
         calibrator_path: Platt 校准器输出路径
         repos_dir: 本地仓库缓存目录（命中缓存时不走 GitHub；传 None 禁用）
+        offline: 是否离线模式（默认 True）。True 时本地缓存缺失直接报错，
+            绝不回退到 GitHub（内网/离线环境无法访问外网）；False（--online）
+            时允许回退到远程 repo_url。
     """
     cases = load_dataset(dataset_path)
     if limit:
@@ -82,7 +107,7 @@ async def run_eval(
             f"[EvalRunner] ══ [{i}/{len(cases)}] {case.case_id} ══ "
             f"({len(case.changes)} 个变更文件, {len(case.ground_truth)} 条标注)"
         )
-        repo_url = resolve_repo_url(case, repos_dir_path)
+        repo_url = resolve_repo_url(case, repos_dir_path, offline=offline)
         try:
             result = await run_review(
                 changes=case.changes,
@@ -167,6 +192,8 @@ def main():
                         help="Platt 校准器输出路径")
     parser.add_argument("--repos-dir", default="data/aacr_repos",
                         help="本地仓库缓存目录（转换脚本的 --repos-dir），命中缓存时不走 GitHub")
+    parser.add_argument("--online", action="store_true", default=False,
+                        help="允许本地缓存缺失时回退到远程 GitHub（内网环境请勿使用）")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -180,6 +207,7 @@ def main():
         output_path=args.output,
         calibrator_path=args.calibrator,
         repos_dir=args.repos_dir,
+        offline=not args.online,
     ))
 
 
