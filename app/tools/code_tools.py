@@ -11,6 +11,7 @@
 4. LangChain StructuredTool —— 直接接入 LangGraph ReAct Agent
 """
 
+import json
 import re
 import logging
 import subprocess
@@ -192,9 +193,38 @@ def create_tools(repo_manager: RepoManager, file_changes: list[FileChange]) -> l
 
     返回:
         [read_file_tool, grep_tool, get_diff_file_tool]
+
+    去重熔断：每次调用 create_tools 生成独立的 call_cache，
+    生命周期 = 单个 Agent 的一次 ainvoke（Critic/Reflector 之间天然隔离）。
+    相同（工具名+参数）的调用第二次出现时不再真实执行，
+    直接返回首次结果 + 收敛提示（相同只读调用不可能返回新信息）。
     """
+    call_cache: dict[str, tuple[int, str]] = {}  # key → (调用次数, 首次执行结果)
+
+    def _guarded(name: str, key_args: dict, func) -> str:
+        """工具执行入口：拦截完全重复的调用。"""
+        key = f"{name}:{json.dumps(key_args, sort_keys=True, ensure_ascii=False)}"
+        if key in call_cache:
+            count, first_result = call_cache[key]
+            call_cache[key] = (count + 1, first_result)
+            logger.warning(f"[Tool:{name}] 拦截第 {count + 1} 次重复调用: {key}")
+            return (
+                f"[重复调用拦截] 你已用完全相同的参数调用过 {name}，相同调用不可能返回新信息。\n"
+                f"该调用的结果如下（与首次相同）：\n{first_result}\n\n"
+                f"决策规则：\n"
+                f"- 若上述信息已足够 → 立即输出最终结论，不要追加调查\n"
+                f"- 若仍需其他信息 → 必须更换参数发起新查询（不同文件/不同行区间/不同pattern）"
+            )
+        result = func()
+        call_cache[key] = (1, result)
+        return result
+
     read_file_tool = StructuredTool.from_function(
-        func=lambda path, start_line=None, end_line=None: _read_file(repo_manager, path, start_line, end_line),
+        func=lambda path, start_line=None, end_line=None: _guarded(
+            "read_file",
+            {"path": path, "start_line": start_line, "end_line": end_line},
+            lambda: _read_file(repo_manager, path, start_line, end_line),
+        ),
         name="read_file",
         description=(
             "读取仓库中指定文件的内容。可指定行范围。"
@@ -205,7 +235,11 @@ def create_tools(repo_manager: RepoManager, file_changes: list[FileChange]) -> l
     )
 
     grep_tool = StructuredTool.from_function(
-        func=lambda pattern, path=None, file_glob=None: _grep(repo_manager, pattern, path, file_glob),
+        func=lambda pattern, path=None, file_glob=None: _guarded(
+            "grep",
+            {"pattern": pattern, "path": path, "file_glob": file_glob},
+            lambda: _grep(repo_manager, pattern, path, file_glob),
+        ),
         name="grep",
         description=(
             "在仓库代码中进行正则表达式搜索。"
@@ -216,7 +250,11 @@ def create_tools(repo_manager: RepoManager, file_changes: list[FileChange]) -> l
     )
 
     get_diff_file_tool = StructuredTool.from_function(
-        func=lambda path: _get_diff_file(file_changes, path),
+        func=lambda path: _guarded(
+            "get_diff_file",
+            {"path": path},
+            lambda: _get_diff_file(file_changes, path),
+        ),
         name="get_diff_file",
         description=(
             "获取本次 MR 中指定变更文件的完整 diff。"

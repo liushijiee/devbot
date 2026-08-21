@@ -10,6 +10,7 @@ LangGraph 节点实现
 """
 
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -87,20 +88,39 @@ def prepare(state: ReviewState) -> dict:
 
 @trace_node("从LLM输出中解析文件diff结果. _parse_findings")
 def _parse_findings(text: str, critic_name: str) -> list[Finding]:
-    """从 LLM 输出中解析 JSON findings。"""
+    """从 LLM 输出中解析 JSON findings。
+
+    健壮性：逐个尝试 '[' 起点（跳过覆盖声明等非 findings 的方括号内容），
+    直到成功解析出 JSON 数组为止。
+    """
 
     try:
 
-        start = text.find("[")
         end = text.rfind("]") + 1
-        if start == -1 or end == 0:
+        if end == 0:
             logger.debug(f"[Parse] {critic_name}: 未找到 JSON 数组")
             return []
-        json_str = text[start:end]
-        raw_findings = json.loads(json_str)
+
+        raw_findings = None
+        start = text.find("[")
+        while start != -1 and start < end:
+            try:
+                candidate = json.loads(text[start:end])
+                if isinstance(candidate, list):
+                    raw_findings = candidate
+                    break
+            except (json.JSONDecodeError, ValueError):
+                pass
+            start = text.find("[", start + 1)
+
+        if raw_findings is None:
+            logger.debug(f"[Parse] {critic_name}: 未能解析出 JSON 数组")
+            return []
 
         findings = []
         for f in raw_findings:
+            if not isinstance(f, dict):
+                continue
             f["critic"] = critic_name
             findings.append(f)
         logger.debug(f"[Parse] {critic_name}: 解析出 {len(findings)} 个 findings")
@@ -161,13 +181,10 @@ async def reflect(state: ReviewState, repo_manager: RepoManager,
                   file_changes: list[FileChange]) -> dict:
     """
     Reflector 验证 Agent（带工具）：
-    - 对 critical/warning 级别的 findings 进行独立调查验证
-    - 可调用 read_file / grep / get_diff_file 获取真实代码上下文
     - info 级别直接通过（节省 token）
-
-    与旧版区别：
-    - 旧版：只看 diff + finding 文本做判断（Critic 幻觉时无法识别）
-    - 新版：能主动读取代码验证声明是否属实（独立审计员）
+    - confidence >= reflect_skip_confidence 直接通过（Critic 已带工具证据链，重验边际价值低）
+    - 其余 findings 并行执行独立调查验证（asyncio.gather）
+    - 每个 finding 独享工具实例与去重缓存，避免跨 agent 缓存污染
     """
     findings = state.get("aggregated_findings", [])
     if not findings:
@@ -175,61 +192,82 @@ async def reflect(state: ReviewState, repo_manager: RepoManager,
         return {"verified_findings": [], "reflect_token_usage": {"input_tokens": 0, "output_tokens": 0, "llm_calls": 0}}
 
     settings = get_settings()
-    logger.info(f"[Reflect] ══ 开始验证 {len(findings)} 个 findings（工具增强模式）══")
-    verified = []
-    reflector_template = load_prompt("reflector")
+    skip_conf = settings.reflect_skip_confidence
+    logger.info(f"[Reflect] ══ 开始验证 {len(findings)} 个 findings（工具增强模式，conf≥{skip_conf} 直通）══")
 
-    tools = create_tools(repo_manager, file_changes)
+    reflector_template = load_prompt("reflector")
     llm = _get_llm()
 
-    reflect_usage: TokenUsage = {"input_tokens": 0, "output_tokens": 0, "llm_calls": 0}
+    async def verify_one(finding: dict) -> tuple[bool, dict, TokenUsage]:
+        """验证单个 finding，返回 (是否保留, 最终 finding, token 用量)。"""
+        user_prompt = reflector_template.format_user(
+            diff_text=state.get("diff_text", ""),
+            finding=json.dumps(finding, ensure_ascii=False, indent=2),
+        )
 
-    for i, finding in enumerate(findings, 1):
+        # 每个 finding 独享工具实例 → 独享去重缓存（作用域 = 单次 ainvoke）
+        tools = create_tools(repo_manager, file_changes)
+        agent = create_react_agent(
+            model=llm,
+            tools=tools,
+            prompt=SystemMessage(content=reflector_template.system),
+        )
 
+        result = await agent.ainvoke(
+            {"messages": [HumanMessage(content=user_prompt)]},
+            config={"recursion_limit": 8},
+        )
+
+        usage = _extract_token_usage(result["messages"])
+        verdict = _parse_verdict(result["messages"][-1].content)
+
+        if verdict["verdict"] == "reject":
+            return False, finding, usage
+        if verdict["verdict"] == "modify" and verdict.get("modified_finding"):
+            return True, verdict["modified_finding"], usage
+        return True, finding, usage
+
+    # ── 分流：直通 vs 需要验证 ──
+    entries: list[tuple[int, dict]] = []   # (原始序号, finding)，保持输出顺序
+    pending: list[tuple[int, dict]] = []   # (原始序号, finding)，需要工具验证
+
+    for i, finding in enumerate(findings):
         if finding.get("severity") == "info":
-            logger.debug(f"[Reflect]   {i}/{len(findings)} [info] 直接通过: {finding.get('title','')}")
-            verified.append(finding)
+            logger.debug(f"[Reflect]   {i+1}/{len(findings)} [info] 直接通过: {finding.get('title','')}")
+            entries.append((i, finding))
             continue
+        conf = finding.get("confidence", 0) or 0
+        if conf >= skip_conf:
+            logger.info(f"[Reflect]   {i+1}/{len(findings)} [conf={conf:.2f}≥{skip_conf}] 直接通过: {finding.get('title','')}")
+            entries.append((i, finding))
+            continue
+        pending.append((i, finding))
 
-        try:
-            user_prompt = reflector_template.format_user(
-                diff_text=state.get("diff_text", ""),
-                finding=json.dumps(finding, ensure_ascii=False, indent=2),
-            )
-
-            agent = create_react_agent(
-                model=llm,
-                tools=tools,
-                prompt=SystemMessage(content=reflector_template.system),
-            )
-
-            result = await agent.ainvoke(
-                {"messages": [HumanMessage(content=user_prompt)]},
-                config={"recursion_limit": 8},
-            )
-
-            # 统计本次验证的 token 消耗
-            usage = _extract_token_usage(result["messages"])
+    # ── 并行验证 ──
+    reflect_usage: TokenUsage = {"input_tokens": 0, "output_tokens": 0, "llm_calls": 0}
+    if pending:
+        logger.info(f"[Reflect] 并行验证 {len(pending)} 个 findings")
+        results = await asyncio.gather(
+            *(verify_one(f) for _, f in pending),
+            return_exceptions=True,
+        )
+        for (i, finding), res in zip(pending, results):
+            if isinstance(res, Exception):
+                logger.warning(f"[Reflect]   {i+1}/{len(findings)} 验证异常，默认通过: {res}")
+                entries.append((i, finding))
+                continue
+            kept, final_finding, usage = res
             reflect_usage["input_tokens"] += usage["input_tokens"]
             reflect_usage["output_tokens"] += usage["output_tokens"]
             reflect_usage["llm_calls"] += usage["llm_calls"]
-
-            last_msg = result["messages"][-1].content
-            verdict = _parse_verdict(last_msg)
-
-            if verdict["verdict"] == "reject":
-                logger.info(f"[Reflect]   {i}/{len(findings)} ✗ 拒绝: {finding.get('title')} - {verdict['reason']}")
-                continue
-            elif verdict["verdict"] == "modify" and verdict.get("modified_finding"):
-                logger.info(f"[Reflect]   {i}/{len(findings)} ✏ 修改: {finding.get('title')}")
-                verified.append(verdict["modified_finding"])
+            if kept:
+                logger.debug(f"[Reflect]   {i+1}/{len(findings)} ✓ 通过: {final_finding.get('title','')}")
+                entries.append((i, final_finding))
             else:
-                logger.debug(f"[Reflect]   {i}/{len(findings)} ✓ 通过: {finding.get('title')}")
-                verified.append(finding)
+                logger.info(f"[Reflect]   {i+1}/{len(findings)} ✗ 拒绝: {finding.get('title','')}")
 
-        except Exception as e:
-            logger.warning(f"[Reflect]   {i}/{len(findings)} 验证异常，默认通过: {e}")
-            verified.append(finding)
+    entries.sort(key=lambda e: e[0])
+    verified = [f for _, f in entries]
 
     logger.info(
         f"[Reflect] ══ 完成 ══ {len(findings)} → {len(verified)} 个 findings"

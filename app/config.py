@@ -18,9 +18,10 @@ class Settings(BaseSettings):
     critic_model: str = "glm-5.1"
     judge_model: str = "qwen3.7-plus"
 
-    max_tool_rounds: int = 20
+    max_tool_rounds: int = 5
     max_file_lines_per_bundle: int = 800
     confidence_threshold: float = 0.4
+    reflect_skip_confidence: float = 0.9
     risk_block_threshold: int = 70
 
     repo_clone_dir: str = "/tmp/devbot_repos"

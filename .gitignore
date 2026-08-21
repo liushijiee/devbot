@@ -30,3 +30,4 @@ Thumbs.db
 *.log
 goat.md
 _lib/
+offline_wheels/

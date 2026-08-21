@@ -19,6 +19,7 @@ from typing import Any
 
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import Send
+from langgraph.errors import GraphRecursionError
 
 from app.config import get_settings
 from app.graph.state import ReviewState, CriticResult, Finding, TokenUsage
@@ -130,6 +131,17 @@ def build_review_graph(repo_manager: RepoManager, file_changes: list[FileChange]
                 f"[CriticNode] {critic_name} 完成 → {len(findings)} findings"
                 f" | token: in={token_usage['input_tokens']}, out={token_usage['output_tokens']}, calls={token_usage['llm_calls']}"
             )
+
+        except GraphRecursionError:
+            # 工具调查轮次超限（recursion_limit 熔断）：确定性失败，禁止重试。
+            # ReAct 模式下 findings 仅存在于最终轮，中间消息无结论可抢救，直接降级为空结果。
+            logger.warning(f"[CriticNode] {critic_name} 工具调查轮次超限，降级为空结果（不重试）")
+            critic_result: CriticResult = {
+                "critic_name": critic_name,
+                "findings": [],
+                "error": "工具调查轮次超限（GraphRecursionError）",
+            }
+            token_usage: TokenUsage = {"input_tokens": 0, "output_tokens": 0, "llm_calls": 0}
 
         except Exception as e:
             logger.error(f"[CriticNode] {critic_name} 失败: {e}", exc_info=True)
