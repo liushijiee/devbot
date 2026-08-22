@@ -7,7 +7,7 @@ import logging
 import sys
 
 from fastapi import FastAPI
-from app.gitlab.webhook import router as webhook_router
+from app.gitlab.router import router as webhook_router
 
 # ── 全局日志配置 ──
 logging.basicConfig(
